@@ -1,0 +1,40 @@
+# === Core Framework ===
+fastapi>=0.109.0
+uvicorn[standard]>=0.25.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+python-dotenv>=1.0.0
+
+# === LLM Providers ===
+anthropic>=0.40.0
+openai>=1.12.0
+httpx>=0.27.0                # Used for Ollama/llama.cpp HTTP clients
+
+# === Optional: Local LLM (llama.cpp Python bindings) ===
+# llama-cpp-python>=0.2.0   # Uncomment for in-process GGUF model loading
+                              # Install with: pip install llama-cpp-python
+                              # For GPU: CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python
+
+# === Embeddings & Vector Store ===
+sentence-transformers>=2.3.0
+chromadb>=0.4.22
+numpy>=1.24.0
+
+# === Document Parsing ===
+beautifulsoup4>=4.12.0
+lxml>=5.0.0                  # Fast HTML parser for SEC filings
+feedparser>=6.0.0            # RSS feed parser for financial news
+
+# === Data & Analysis ===
+pandas>=2.1.0                # Financial data manipulation
+# scipy>=1.11.0              # Optional: statistical analysis
+
+# === Testing ===
+pytest>=7.4.0
+pytest-asyncio>=0.23.0
+pytest-cov>=4.1.0
+
+# === Development ===
+black>=24.0.0
+ruff>=0.2.0
+mypy>=1.8.0
