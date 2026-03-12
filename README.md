@@ -386,6 +386,69 @@ The system maintains separate ChromaDB collections for different data types:
 
 2. **Company Name Matching**: Enhanced RSS news matching with company name mappings for 20+ major tech and finance companies (e.g., "Apple" for AAPL, "Microsoft" for MSFT).
 
+3. **Intent-Based Agent Routing**: Implemented intelligent intent detection and multi-agent orchestration system:
+   - **Intent Detector**: Classifies queries into 15+ intent categories using keyword matching, pattern recognition, and LLM fallback
+   - **Research Agent**: Specializes in SEC filings, earnings calls, and news search
+   - **Analysis Agent**: Handles comprehensive analysis, risk assessment, valuation, and ratio calculations
+   - **Data Agent**: Manages financial statements, company profiles, stock prices, and data ingestion
+   - Automatic routing based on detected intent for optimal task execution
+
+## Intent Categories
+
+The system recognizes the following intent categories:
+
+| Category | Description | Example Queries |
+|----------|-------------|-----------------|
+| `sec_filing_query` | SEC filing search | "What did Apple's 10-K say about risk factors?" |
+| `earnings_query` | Earnings call transcripts | "What did the CEO say about guidance on the earnings call?" |
+| `news_query` | Financial news search | "Recent news about Microsoft" |
+| `financial_data_query` | Financial statements | "Show me Tesla's income statement for last quarter" |
+| `comprehensive_analysis` | Full analysis | "Analyze whether I should invest in NVDA" |
+| `risk_analysis` | Risk assessment | "What are the risks of investing in AMZN?" |
+| `valuation_analysis` | Valuation metrics | "Is GOOGL overvalued or undervalued?" |
+| `ratio_analysis` | Financial ratios | "Calculate ROE and debt-to-equity for JPM" |
+| `company_profile` | Company overview | "Tell me about Apple's business model" |
+| `stock_price` | Stock price data | "What's the stock price performance for TSLA this year?" |
+| `analyst_estimates` | Analyst recommendations | "What are analysts saying about AAPL?" |
+| `ingest_data` | Data ingestion | "Download SEC filings for MSFT" |
+
+## Agent Architecture
+
+```
+                    User Query
+                        │
+                        ▼
+                ┌───────────────┐
+                │   Intent      │
+                │   Detector    │
+                └───────┬───────┘
+                        │
+        ┌───────────────┼───────────────┐
+        │               │               │
+        ▼               ▼               ▼
+┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+│  Research    │ │  Analysis    │ │    Data      │
+│   Agent      │ │   Agent      │ │    Agent     │
+│              │ │              │ │              │
+│ • SEC Search │ │ • Comprehensive│ │ • Financial  │
+│ • Earnings   │ │ • Risk       │ │   Statements │
+│ • News       │ │ • Valuation  │ │ • Profile    │
+│              │ │ • Ratios     │ │ • Stock Price│
+└──────────────┘ └──────────────┘ └──────────────┘
+        │               │               │
+        └───────────────┼───────────────┘
+                        │
+                        ▼
+                ┌───────────────┐
+                │   Response    │
+                │   Synthesis   │
+                └───────┬───────┘
+                        │
+                        ▼
+                  Final Answer
+                  + Citations
+```
+
 ## Docker
 
 ```bash
