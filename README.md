@@ -4,37 +4,154 @@ Enterprise RAG-powered financial analysis platform that combines SEC filings, ea
 
 ## Architecture
 
+### System Overview
+
 ```
-User Question
-      |
-      v
-  Agent Orchestrator (tool routing via LLM function calling)
-      |
-      +---> RAG Retriever (ChromaDB vector search)
-      |         |
-      |         +---> SEC Filings (10-K, 10-Q, 8-K)
-      |         +---> Earnings Call Transcripts
-      |         +---> Financial News
-      |
-      +---> Financial Data APIs
-      |         |
-      |         +---> Income Statements
-      |         +---> Balance Sheets
-      |         +---> Cash Flow Statements
-      |         +---> Stock Prices & Estimates
-      |
-      +---> Analysis Engine
-      |         |
-      |         +---> 30+ Financial Ratios
-      |         +---> Variance Analysis
-      |         +---> Risk Assessment
-      |         +---> Valuation Framework
-      |
-      v
-  LLM Synthesis (Anthropic / OpenAI / Ollama / llama.cpp)
-      |
-      v
-  Structured Report + Citations
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                           AI Financial Analyst System                           │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐                     │
+│  │   CLI        │     │   FastAPI    │     │   Chat       │                     │
+│  │   Interface  │     │   Server     │     │   Interface  │                     │
+│  └──────┬───────┘     └──────┬───────┘     └──────┬───────┘                     │
+│         │                    │                    │                             │
+│         └────────────────────┼────────────────────┘                             │
+│                              │                                                  │
+│                     ┌────────▼────────┐                                         │
+│                     │   Agent         │                                         │
+│                     │   Orchestrator  │                                         │
+│                     │   (Tool Router) │                                         │
+│                     └────────┬────────┘                                         │
+│                              │                                                  │
+│         ┌────────────────────┼────────────────────┐                             │
+│         │                    │                    │                             │
+│         ▼                    ▼                    ▼                             │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                       │
+│  │   RAG        │    │   Financial  │    │   Analysis   │                       │
+│  │   Retriever  │    │   Data APIs  │    │   Engine     │                       │
+│  └──────┬───────┘    └──────┬───────┘    └──────┬───────┘                       │
+│         │                   │                   │                               │
+└─────────┼───────────────────┼───────────────────┼───────────────────────────────┘
+          │                   │                   │
+          ▼                   ▼                   ▼
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                              Data Layer                                        │
+├────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                │
+│  ┌───────────────────────────────────────────────────────────────────────────┐ │
+│  │  Ingestion Pipeline                                                       │ │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐       │ │
+│  │  │ SEC EDGAR   │  │ Earnings    │  │ Financial   │  │ RSS Feeds   │       │ │
+│  │  │ Downloader  │  │ Calls       │  │ News APIs   │  │ (Fallback)  │       │ │
+│  │  │             │  │ Processor   │  │ (Finnhub,   │  │             │       │ │
+│  │  │ • 10-K      │  │             │  │  Alpha      │  │ • MarketWatch│      │ │
+│  │  │ • 10-Q      │  │ • Transcripts│ │  Vantage)   │  │ • CNBC      │       │ │
+│  │  │ • 8-K       │  │ • Speakers  │  │             │  │ • Business  │       │ │
+│  │  │             │  │ • Q&A       │  │ • Headlines │  │   Insider   │       │ │
+│  │  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘       │ │
+│  │         │                │                │                │              │ │
+│  │         └────────────────┴────────────────┴────────────────┘              │ │
+│  │                              │                                            │ │
+│  │                     ┌────────▼────────┐                                   │ │
+│  │                     │ Text Processing │                                   │ │
+│  │                     │ • Cleaning      │                                   │ │
+│  │                     │ • Chunking      │                                   │ │
+│  │                     │ • Section Split │                                   │ │
+│  │                     └────────┬────────┘                                   │ │
+│  └──────────────────────────────┼────────────────────────────────────────────┘ │
+│                                 │                                              │
+│                                 ▼                                              │
+│  ┌───────────────────────────────────────────────────────────────────────────┐ │
+│  │  Embedding & Vector Store                                                 │ │
+│  │  ┌─────────────────┐    ┌─────────────────────────────────────────────┐   │ │
+│  │  │ Ollama /        │    │ ChromaDB Collections                        │   │ │
+│  │  │ Sentence-       │───▶│ ┌─────────────┐ ┌─────────────┐ ┌─────────┐ │   │ │
+│  │  │ Transformers    │    │ │ SEC Filings │ │ Earnings    │ │    News │ │   │ │
+│  │  │ (768-dim)       │    │ │ (10-K,10-Q) │ │ Calls       │ │         │ │   │ │
+│  │  └─────────────────┘    │ └─────────────┘ └─────────────┘ └─────────┘ │   │ │
+│  │                         └─────────────────────────────────────────────┘   │ │
+│  └───────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                │
+│  ┌───────────────────────────────────────────────────────────────────────────┐ │
+│  │  Local Storage (./data/)                                                  │ │
+│  │  ├── sec_filings/     (JSON metadata for downloaded filings)              │ │
+│  │  ├── news/            (Fetched news articles)                             │ │
+│  │  ├── earnings_calls/  (Transcripts)                                       │ │
+│  │  └── vector_store/    (ChromaDB persistent embeddings)                    │ │
+│  └───────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                │
+└────────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              LLM Layer                                          │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  ┌───────────────────────────────────────────────────────────────────────────┐  │
+│  │  Supported Providers (switch via LM_PROVIDER in .env)                     │  │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │  │
+│  │  │ Anthropic    │  │ OpenAI       │  │ Ollama       │  │ llama.cpp    │   │  │
+│  │  │ Claude       │  │ GPT-4        │  │ Local        │  │ GGUF Models  │   │  │
+│  │  │ (Recommended)│  │              │  │ (Qwen3)      │  │              │   │  │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘   │  │
+│  └───────────────────────────────────────────────────────────────────────────┘  │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+                                        │
+                                        ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              Output Layer                                       │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐                  │
+│  │ Structured      │  │ Citations &     │  │ Financial       │                  │
+│  │ Reports         │  │ Sources         │  │ Ratios &        │                  │
+│  │ (Markdown/JSON) │  │                 │  │ Metrics         │                  │
+│  └─────────────────┘  └─────────────────┘  └─────────────────┘                  │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Data Flow
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│   Ingest    │────▶│   Process   │────▶│   Embed     │────▶│   Store     │
+│   (Fetch)   │     │   (Clean)   │     │   (Vector)  │     │   (ChromaDB)│
+└─────────────┘     └─────────────┘     └─────────────┘     └─────────────┘
+       │                   │                   │                   │
+       ▼                   ▼                   ▼                   ▼
+  SEC Filings         Remove HTML       Generate          Persist to
+  News Articles       Split sections    768-dim           disk
+  Earnings Calls      Chunk text        embeddings        ./data/vector_store/
+```
+
+### Query Flow
+
+```
+User Question ──▶ Agent Orchestrator ──▶ Tool Selection
+                                              │
+                    ┌─────────────────────────┼─────────────────────────┐
+                    │                         │                         │
+                    ▼                         ▼                         ▼
+            ┌───────────────┐         ┌───────────────┐         ┌───────────────┐
+            │ RAG Retrieval │         │ Financial     │         │ Analysis      │
+            │ (Vector DB)   │         │ Data Fetch    │         │ Calculations  │
+            └───────┬───────┘         └───────┬───────┘         └───────┬───────┘
+                    │                         │                         │
+                    └─────────────────────────┼─────────────────────────┘
+                                              │
+                                              ▼
+                                      ┌───────────────┐
+                                      │ LLM Synthesis │
+                                      │ + Citations   │
+                                      └───────┬───────┘
+                                              │
+                                              ▼
+                                      ┌───────────────┐
+                                      │ Final Answer  │
+                                      └───────────────┘
 ```
 
 ## LLM Providers
@@ -124,6 +241,52 @@ curl -X POST http://localhost:8000/api/v1/query \
 - **Alpha Vantage**: Prices, fundamentals, news (free tier)
 - **Finnhub**: News, estimates, recommendations (free tier)
 - **Polygon.io**: Market data (free tier)
+- **RSS Feeds**: Financial news from MarketWatch, CNBC, Business Insider (free, no API key required)
+
+### News Ingestion Priority
+
+The system fetches news using the following priority:
+
+1. **Finnhub API** (if `FINNHUB_API_KEY` is set)
+2. **Alpha Vantage News** (if `ALPHA_VANTAGE_API_KEY` is set)
+3. **RSS Feeds** (automatic fallback — no configuration needed)
+
+RSS feeds search for company names (e.g., "Apple" for AAPL) in article titles and content. If company-specific news is unavailable, general market news is fetched as a fallback.
+
+### Supported RSS Feeds
+
+| Source | Feed Type |
+|--------|-----------|
+| MarketWatch | Top Stories |
+| CNBC | Top News & Technology |
+| Investing.com | Technology News |
+| Business Insider | General Business |
+
+### Company Name Mapping
+
+The system automatically maps ticker symbols to company names for better RSS matching:
+
+- **AAPL**: Apple, Apple Inc
+- **MSFT**: Microsoft, Microsoft Corp
+- **GOOGL/GOOG**: Google, Alphabet
+- **AMZN**: Amazon, Amazon.com
+- **TSLA**: Tesla, Tesla Inc
+- **META**: Meta, Facebook
+- **NVDA**: Nvidia, NVIDIA
+- **JPM**: JPMorgan, J.P. Morgan
+- **BAC**: Bank of America, BofA
+- **WFC**: Wells Fargo
+- **AMD**: AMD, Advanced Micro Devices
+- **INTC**: Intel
+- **NFLX**: Netflix
+- **DIS**: Disney, Walt Disney
+- **COIN**: Coinbase
+- **PYPL**: PayPal
+- **SQ**: Block, Square
+- **UBER**: Uber
+- **LYFT**: Lyft
+
+To add more companies, edit the `COMPANY_NAMES` dictionary in `ingestion/financial_news.py`.
 
 ## Analysis Capabilities
 
@@ -178,6 +341,50 @@ ai_financial_analyst/
 ```bash
 pytest tests/ -v --cov=.
 ```
+
+## Data Storage
+
+Ingested data is stored locally in the `./data/` directory:
+
+```
+data/
+├── sec_filings/           # Downloaded SEC filing metadata
+│   ├── Apple_Inc__10-K_2025-10-31.json
+│   ├── Apple_Inc__10-Q_2026-01-30.json
+│   └── ...
+├── news/                  # Fetched news articles
+│   ├── news_AAPL_20260312_234023.json
+│   └── ...
+├── earnings_calls/        # Earnings call transcripts (if available)
+└── vector_store/          # ChromaDB vector embeddings
+    ├── sec_filings/
+    ├── earnings_calls/
+    └── financial_news/
+```
+
+### Vector Store Collections
+
+The system maintains separate ChromaDB collections for different data types:
+
+| Collection | Description |
+|------------|-------------|
+| `sec_filings` | SEC 10-K, 10-Q, 8-K filings |
+| `earnings_calls` | Earnings call transcripts |
+| `financial_news` | Financial news articles |
+
+## Recent Updates
+
+### Bug Fixes (March 2026)
+
+1. **Regex Pattern Fix**: Fixed "global flags not at the start of the expression" error in SEC filing text processing by properly handling `(?i)` flags in combined regex patterns.
+
+2. **ChromaDB Compatibility**: Fixed "'str' object is not callable" error by converting `ChromaEmbeddingFunction.name` from attribute to method for ChromaDB API compatibility.
+
+### New Features (March 2026)
+
+1. **RSS Feed News Ingestion**: Added automatic fallback to RSS feeds for financial news when API keys are not available. Supports MarketWatch, CNBC, Investing.com, and Business Insider.
+
+2. **Company Name Matching**: Enhanced RSS news matching with company name mappings for 20+ major tech and finance companies (e.g., "Apple" for AAPL, "Microsoft" for MSFT).
 
 ## Docker
 
