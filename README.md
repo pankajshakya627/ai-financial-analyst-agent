@@ -4,7 +4,65 @@ Enterprise RAG-powered financial analysis platform that combines SEC filings, ea
 
 ## Architecture
 
-### System Overview
+### Mermaid Diagram
+
+```mermaid
+flowchart TB
+    subgraph UserInterfaces["User Interfaces"]
+        CLI["CLI Interface"]
+        FastAPI["FastAPI Server"]
+        Chat["Chat Interface"]
+    end
+
+    subgraph Orchestrator["Agent Orchestrator"]
+        Intent["Intent Detector"]
+        Router["Agent Router"]
+    end
+
+    subgraph Agents["Specialized Agents"]
+        Research["Research Agent<br/>SEC/Earnings/News"]
+        Analysis["Analysis Agent<br/>Ratios/Valuation/Risk"]
+        Data["Data Agent<br/>Statements/Profiles"]
+    end
+
+    subgraph DataLayer["Data Layer"]
+        subgraph Ingestion["Ingestion Pipeline"]
+            SEC["SEC EDGAR"]
+            Earnings["Earnings Calls"]
+            News["News APIs"]
+            RSS["RSS Feeds"]
+        end
+        
+        subgraph Processing["Text Processing"]
+            Clean["Cleaning"]
+            Chunk["Chunking"]
+            Embed["Embedding"]
+        end
+        
+        subgraph Storage["Vector Store"]
+            ChromaDB["(ChromaDB)"]
+            Collections["Collections:<br/>- SEC Filings<br/>- Earnings Calls<br/>- Financial News"]
+        end
+    end
+
+    subgraph LLM["LLM Layer"]
+        Anthropic["Anthropic"]
+        OpenAI["OpenAI"]
+        Ollama["Ollama"]
+        LlamaCPP["llama.cpp"]
+    end
+
+    UserInterfaces --> Orchestrator
+    Intent --> Router
+    Router --> Agents
+    Agents --> DataLayer
+    Agents --> LLM
+    Ingestion --> Processing
+    Processing --> Storage
+    Storage --> Agents
+```
+
+### System Overview (ASCII)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
@@ -413,6 +471,46 @@ The system recognizes the following intent categories:
 | `ingest_data` | Data ingestion | "Download SEC filings for MSFT" |
 
 ## Agent Architecture
+
+### Agent Routing Flow (Mermaid)
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant ID as Intent Detector
+    participant Router as Agent Router
+    participant RA as Research Agent
+    participant AA as Analysis Agent
+    participant DA as Data Agent
+    participant DB as Database
+
+    User->>ID: "What are Apple's risk factors?"
+    ID->>ID: Classify Intent
+    ID-->>Router: sec_filing_query<br/>(confidence: 0.92)
+    
+    Router->>Router: Route to Agent
+    Router->>RA: Execute Search
+    
+    RA->>DB: Query SEC Filings
+    DB-->>RA: Retrieved Documents
+    RA-->>Router: AgentResult
+    
+    Router->>Router: Synthesize Response
+    Router-->>User: Answer with Citations
+    
+    Note over ID,DA: Alternative Routes
+    User->>ID: "Analyze NVDA valuation"
+    ID-->>Router: valuation_analysis
+    Router->>AA: Execute Analysis
+    AA-->>User: Valuation Report
+    
+    User->>ID: "Get MSFT financial statements"
+    ID-->>Router: financial_data_query
+    Router->>DA: Fetch Data
+    DA-->>User: Financial Data
+```
+
+### Agent Architecture (ASCII)
 
 ```
                     User Query
