@@ -106,19 +106,21 @@ class FinancialDataClient:
             logger.info("No financial data API keys configured; using SEC XBRL filings data")
         self._sec_client: Optional[SECEdgarClient] = None
         self._facts_cache: dict[str, tuple[float, dict]] = {}
+        self._facts_locks: dict[str, asyncio.Lock] = {}
 
     async def _sec_facts(self, ticker: str) -> dict:
         """SEC company facts, cached for an hour per ticker."""
         import time
 
         key = ticker.upper()
-        cached = self._facts_cache.get(key)
-        if cached and time.time() - cached[0] < 3600:
-            return cached[1]
-        self._sec_client = self._sec_client or SECEdgarClient()
-        facts = await self._sec_client.get_company_facts(ticker)
-        self._facts_cache[key] = (time.time(), facts)
-        return facts
+        async with self._facts_locks.setdefault(key, asyncio.Lock()):
+            cached = self._facts_cache.get(key)
+            if cached and time.time() - cached[0] < 3600:
+                return cached[1]
+            self._sec_client = self._sec_client or SECEdgarClient()
+            facts = await self._sec_client.get_company_facts(ticker)
+            self._facts_cache[key] = (time.time(), facts)
+            return facts
 
     async def _sec_statements(
         self, ticker: str, statement_type: str, period: str, limit: int
