@@ -9,7 +9,7 @@ import json
 import logging
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass, field
@@ -22,10 +22,14 @@ from config.settings import settings
 logger = logging.getLogger(__name__)
 
 # SEC EDGAR API endpoints
-EDGAR_COMPANY_SEARCH = "https://efts.sec.gov/LATEST/search-index?q={query}&dateRange=custom&startdt={start}&enddt={end}&forms={form_type}"
 EDGAR_SUBMISSIONS = "https://data.sec.gov/submissions/CIK{cik}.json"
-EDGAR_FILING_URL = "https://www.sec.gov/Archives/edgar/data/{cik}/{accession}/{filename}"
-EDGAR_FULL_TEXT_SEARCH = "https://efts.sec.gov/LATEST/search-index?q={query}&forms={forms}&dateRange=custom&startdt={start}&enddt={end}"
+
+
+EDGAR_COMPANY_FACTS = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
+TICKER_MAP_TTL_SECONDS = 24 * 3600
+
+# Process-wide cache so the ~1 MB ticker file is not downloaded on every lookup
+_ticker_map_cache: dict = {"fetched_at": 0.0, "map": {}}
 
 
 @dataclass
@@ -50,7 +54,6 @@ class SECEdgarClient:
     Downloads and parses SEC filings for RAG ingestion.
     """
 
-    SUPPORTED_FORMS = {"10-K", "10-Q", "8-K", "DEF 14A", "10-K/A", "10-Q/A"}
     RATE_LIMIT_DELAY = 0.12  # ~8 requests/sec to stay under SEC's 10/sec limit
 
     def __init__(self):
@@ -75,27 +78,38 @@ class SECEdgarClient:
         return response
 
     async def get_company_cik(self, ticker: str) -> Optional[str]:
-        """Look up a company's CIK number from its ticker symbol."""
-        url = f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company={ticker}&type=&dateb=&owner=include&count=10&search_text=&action=getcompany&output=atom"
+        """Look up a company's CIK number from its ticker symbol (cached)."""
+        try:
+            cache = _ticker_map_cache
+            if not cache["map"] or time.time() - cache["fetched_at"] > TICKER_MAP_TTL_SECONDS:
+                async with httpx.AsyncClient() as client:
+                    resp = await self._rate_limited_get(
+                        "https://www.sec.gov/files/company_tickers.json", client
+                    )
+                cache["map"] = {
+                    entry["ticker"].upper(): str(entry["cik_str"]).zfill(10)
+                    for entry in resp.json().values()
+                }
+                cache["fetched_at"] = time.time()
 
-        async with httpx.AsyncClient() as client:
-            try:
-                # Use the company tickers JSON endpoint
-                tickers_url = "https://www.sec.gov/files/company_tickers.json"
-                resp = await self._rate_limited_get(tickers_url, client)
-                tickers_data = resp.json()
-
-                for entry in tickers_data.values():
-                    if entry.get("ticker", "").upper() == ticker.upper():
-                        cik = str(entry["cik_str"]).zfill(10)
-                        logger.info(f"Found CIK {cik} for ticker {ticker}")
-                        return cik
-
+            cik = cache["map"].get(ticker.upper())
+            if cik:
+                logger.info(f"Found CIK {cik} for ticker {ticker}")
+            else:
                 logger.warning(f"CIK not found for ticker: {ticker}")
-                return None
-            except Exception as e:
-                logger.error(f"Error looking up CIK for {ticker}: {e}")
-                return None
+            return cik
+        except Exception as e:
+            logger.error(f"Error looking up CIK for {ticker}: {e}")
+            return None
+
+    async def get_company_facts(self, ticker: str) -> dict:
+        """Fetch SEC XBRL company facts (structured financial data) for a ticker."""
+        cik = await self.get_company_cik(ticker)
+        if not cik:
+            raise ValueError(f"Could not find CIK for ticker: {ticker}")
+        async with httpx.AsyncClient() as client:
+            resp = await self._rate_limited_get(EDGAR_COMPANY_FACTS.format(cik=cik), client)
+        return resp.json()
 
     async def get_company_filings(
         self,
@@ -238,13 +252,25 @@ class SECEdgarClient:
             return {"full_text": text}
 
         # Find section boundaries
-        found_sections = []
+        # Every heading hit, including table-of-contents entries
+        all_hits = []
         for name, pattern in section_map.items():
-            match = re.search(pattern, text)
-            if match:
-                found_sections.append((name, match.start()))
+            for match in re.finditer(pattern, text):
+                all_hits.append((match.start(), name))
+        all_hits.sort()
 
-        found_sections.sort(key=lambda x: x[1])
+        # For each section keep the hit followed by the most text before the
+        # next heading; table-of-contents entries are followed by almost nothing.
+        best: dict[str, tuple[int, int]] = {}
+        for idx, (start, name) in enumerate(all_hits):
+            next_start = all_hits[idx + 1][0] if idx + 1 < len(all_hits) else len(text)
+            length = next_start - start
+            if name not in best or length > best[name][1]:
+                best[name] = (start, length)
+
+        found_sections = sorted(
+            ((name, start) for name, (start, _) in best.items()), key=lambda x: x[1]
+        )
 
         for i, (name, start) in enumerate(found_sections):
             end = found_sections[i + 1][1] if i + 1 < len(found_sections) else len(text)
@@ -301,42 +327,9 @@ class SECEdgarClient:
             "url": filing.url,
             "sections": {k: v[:5000] for k, v in filing.sections.items()},  # truncate for storage
             "raw_text_length": len(filing.raw_text),
-            "downloaded_at": datetime.utcnow().isoformat(),
+            "downloaded_at": datetime.now(timezone.utc).isoformat(),
         }
 
         filepath.write_text(json.dumps(data, indent=2))
         logger.info(f"Saved filing: {filepath}")
         return filepath
-
-    async def search_filings(
-        self,
-        query: str,
-        form_types: list[str] = None,
-        start_date: str = "2020-01-01",
-        end_date: Optional[str] = None,
-    ) -> list[dict]:
-        """Full-text search across SEC EDGAR filings."""
-        if not end_date:
-            end_date = datetime.now().strftime("%Y-%m-%d")
-
-        forms = ",".join(form_types or ["10-K", "10-Q"])
-        url = (
-            f"https://efts.sec.gov/LATEST/search-index?"
-            f"q=%22{query}%22&forms={forms}"
-            f"&dateRange=custom&startdt={start_date}&enddt={end_date}"
-        )
-
-        async with httpx.AsyncClient() as client:
-            resp = await self._rate_limited_get(url, client)
-            results = resp.json()
-
-        hits = results.get("hits", {}).get("hits", [])
-        return [
-            {
-                "company": hit.get("_source", {}).get("display_names", ["Unknown"])[0],
-                "form_type": hit.get("_source", {}).get("form_type", ""),
-                "filing_date": hit.get("_source", {}).get("file_date", ""),
-                "url": f"https://www.sec.gov/Archives/edgar/data/{hit.get('_source', {}).get('file_num', '')}",
-            }
-            for hit in hits[:20]
-        ]

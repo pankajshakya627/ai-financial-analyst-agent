@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # Lightweight set: skips sentence-transformers/torch, which tests do not need
+      - name: Install dependencies
+        run: |
+          pip install pytest pytest-asyncio pydantic pydantic-settings httpx numpy \
+            beautifulsoup4 lxml feedparser fastapi chromadb ruff
+      - name: Lint
+        run: ruff check . --select F
+      - name: Test
+        run: python -m pytest tests -q

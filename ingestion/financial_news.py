@@ -11,7 +11,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass, field
-from urllib.parse import quote
 
 import httpx
 import feedparser
@@ -133,11 +132,12 @@ class FinancialNewsIngester:
             f"symbol={ticker}"
             f"&from={start_date.strftime('%Y-%m-%d')}"
             f"&to={end_date.strftime('%Y-%m-%d')}"
-            f"&token={self.finnhub_key}"
         )
 
         async with httpx.AsyncClient() as client:
-            resp = await client.get(url, timeout=15)
+            resp = await client.get(
+                url, timeout=15, headers={"X-Finnhub-Token": self.finnhub_key}
+            )
             resp.raise_for_status()
             data = resp.json()
 
@@ -250,7 +250,10 @@ class FinancialNewsIngester:
                     
                     # Look for any of the search terms in title or content
                     text_to_search = f"{title} {summary} {content}"
-                    if not any(term in text_to_search for term in search_terms):
+                    if not any(
+                        re.search(rf"\b{re.escape(term)}\b", text_to_search)
+                        for term in search_terms
+                    ):
                         continue
                     
                     # Extract source
@@ -277,41 +280,9 @@ class FinancialNewsIngester:
             if len(articles) >= max_articles:
                 break
         
-        # If no ticker-specific articles found, fetch general market news
-        if len(articles) < 5:
-            logger.info(f"No ticker-specific news found for {ticker}, fetching general market news")
-            for feed_name, feed_url in RSS_FEEDS.items():
-                try:
-                    async with httpx.AsyncClient() as client:
-                        resp = await client.get(feed_url, timeout=15, follow_redirects=True)
-                        resp.raise_for_status()
-                        
-                    feed = feedparser.parse(resp.text)
-                    
-                    for entry in feed.entries[:10]:
-                        published_at = self._parse_rss_date(entry)
-                        
-                        articles.append(
-                            NewsArticle(
-                                title=entry.get("title", ""),
-                                summary=entry.get("summary", "")[:500] if entry.get("summary") else "",
-                                source=feed.feed.get("title", feed_name),
-                                url=entry.get("link", ""),
-                                published_at=published_at.isoformat() if published_at else datetime.now().isoformat(),
-                                tickers=[ticker],
-                                category="market_news",
-                            )
-                        )
-                        
-                        if len(articles) >= max_articles:
-                            break
-                            
-                except Exception as e:
-                    logger.warning(f"RSS feed {feed_name} failed: {e}")
-                
-                if len(articles) >= max_articles:
-                    break
-        
+        if not articles:
+            logger.info(f"No ticker-specific RSS news found for {ticker}")
+
         logger.info(f"Fetched {len(articles)} articles from RSS feeds for {ticker}")
         return articles
 
@@ -323,8 +294,8 @@ class FinancialNewsIngester:
             "created_parsed",
         ]
         
-        for field in date_fields:
-            parsed = entry.get(field)
+        for date_field in date_fields:
+            parsed = entry.get(date_field)
             if parsed:
                 try:
                     return datetime(*parsed[:6])
@@ -332,8 +303,8 @@ class FinancialNewsIngester:
                     pass
         
         # Try string parsing
-        for field in ["published", "updated", "created"]:
-            date_str = entry.get(field)
+        for date_field in ["published", "updated", "created"]:
+            date_str = entry.get(date_field)
             if date_str:
                 try:
                     # Try common RSS date formats
@@ -351,43 +322,6 @@ class FinancialNewsIngester:
                     pass
         
         return None
-
-    async def fetch_market_news(
-        self, category: str = "general", max_articles: int = 30
-    ) -> list[NewsArticle]:
-        """Fetch general market news (not company-specific)."""
-        articles = []
-
-        if self.finnhub_key:
-            url = (
-                f"https://finnhub.io/api/v1/news?"
-                f"category={category}"
-                f"&token={self.finnhub_key}"
-            )
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(url, timeout=15)
-                resp.raise_for_status()
-                data = resp.json()
-
-            for item in data[:max_articles]:
-                articles.append(
-                    NewsArticle(
-                        title=item.get("headline", ""),
-                        summary=item.get("summary", ""),
-                        source=item.get("source", "finnhub"),
-                        url=item.get("url", ""),
-                        published_at=datetime.fromtimestamp(
-                            item.get("datetime", 0)
-                        ).isoformat(),
-                        category=item.get("category", category),
-                    )
-                )
-
-        # Fallback to RSS feeds if no API key or no articles
-        if not articles and self.use_rss_fallback:
-            return await self._fetch_rss_news("MARKET", 7, max_articles)
-
-        return articles
 
     def save_articles(self, articles: list[NewsArticle], label: str = "batch") -> Path:
         """Save a batch of articles to local storage."""

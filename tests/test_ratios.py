@@ -143,3 +143,22 @@ class TestAllRatios:
         )
         # Should return empty or only ratios with None filtered out
         assert isinstance(ratios, list)
+
+
+class TestRegressions:
+    def test_debt_not_double_counted(self, calculator):
+        # totalDebt already includes short-term debt
+        balance = {"totalDebt": 60e6, "shortTermDebt": 10e6, "totalStockholdersEquity": 90e6}
+        dte = next(r for r in calculator._leverage_ratios({}, balance) if r.name == "Debt-to-Equity")
+        assert dte.value == pytest.approx(60 / 90)
+
+    def test_debt_summed_when_total_missing(self, calculator):
+        balance = {"longTermDebt": 50e6, "shortTermDebt": 10e6, "totalStockholdersEquity": 60e6}
+        dte = next(r for r in calculator._leverage_ratios({}, balance) if r.name == "Debt-to-Equity")
+        assert dte.value == pytest.approx(1.0)
+
+    def test_operating_expenses_not_used_as_operating_income(self, calculator):
+        income = {"revenue": 100, "operatingExpenses": 70}
+        ratios = calculator._profitability_ratios(income, {})
+        margin = next(r for r in ratios if r.name == "Operating Margin")
+        assert margin.value is None

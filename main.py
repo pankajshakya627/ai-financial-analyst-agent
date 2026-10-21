@@ -28,6 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config.settings import settings
+from core.security import install_log_redaction
 
 
 def setup_logging():
@@ -36,6 +37,7 @@ def setup_logging():
         level=getattr(logging, settings.log_level.upper()),
         format=settings.log_format,
     )
+    install_log_redaction()
 
 
 def cmd_serve(args):
@@ -80,7 +82,7 @@ def cmd_ingest(args):
             print(f"  Errors: {stats['errors']}")
 
     news_stats = result.get("news", {})
-    print(f"\nNews:")
+    print("\nNews:")
     print(f"  Articles fetched: {news_stats.get('articles_fetched', 0)}")
     print(f"  Chunks created: {news_stats.get('chunks_created', 0)}")
 
@@ -174,7 +176,7 @@ def cmd_config(args):
     print(f"\nChunk Size:        {settings.chunk_size}")
     print(f"Chunk Overlap:     {settings.chunk_overlap}")
     print(f"Top-K Results:     {settings.top_k_results}")
-    print(f"\nData APIs:")
+    print("\nData APIs:")
     print(f"  FMP:             {'configured' if settings.fmp_api_key else 'not set'}")
     print(f"  Alpha Vantage:   {'configured' if settings.alpha_vantage_api_key else 'not set'}")
     print(f"  Finnhub:         {'configured' if settings.finnhub_api_key else 'not set'}")
@@ -195,16 +197,7 @@ def cmd_config(args):
 
 def _get_model_name() -> str:
     """Get the active model name based on provider."""
-    provider = settings.llm_provider.value
-    if provider == "anthropic":
-        return settings.anthropic_model
-    elif provider == "openai":
-        return settings.openai_model
-    elif provider == "ollama":
-        return settings.ollama_model
-    elif provider == "llamacpp":
-        return settings.llamacpp_model_path or f"server@{settings.llamacpp_base_url}"
-    return "unknown"
+    return settings.active_llm_model
 
 
 def main():

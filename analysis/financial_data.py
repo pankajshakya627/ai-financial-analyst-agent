@@ -15,12 +15,14 @@ Provides a unified interface for:
 import asyncio
 import logging
 from typing import Optional
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 
 import httpx
 
 from config.settings import settings
+from ingestion.sec_edgar import SECEdgarClient
+from ingestion.sec_xbrl import facts_to_statements
 
 logger = logging.getLogger(__name__)
 
@@ -100,8 +102,43 @@ class FinancialDataClient:
         elif self.polygon_key:
             self.primary = "polygon"
         else:
-            self.primary = None
-            logger.warning("No financial data API keys configured")
+            self.primary = "sec_xbrl"
+            logger.info("No financial data API keys configured; using SEC XBRL filings data")
+        self._sec_client: Optional[SECEdgarClient] = None
+        self._facts_cache: dict[str, tuple[float, dict]] = {}
+        self._facts_locks: dict[str, asyncio.Lock] = {}
+
+    async def _sec_facts(self, ticker: str) -> dict:
+        """SEC company facts, cached for an hour per ticker."""
+        import time
+
+        key = ticker.upper()
+        async with self._facts_locks.setdefault(key, asyncio.Lock()):
+            cached = self._facts_cache.get(key)
+            if cached and time.time() - cached[0] < 3600:
+                return cached[1]
+            self._sec_client = self._sec_client or SECEdgarClient()
+            facts = await self._sec_client.get_company_facts(ticker)
+            self._facts_cache[key] = (time.time(), facts)
+            return facts
+
+    async def _sec_statements(
+        self, ticker: str, statement_type: str, period: str, limit: int
+    ) -> list[FinancialStatement]:
+        if period != "annual":
+            raise ValueError("SEC fallback supports annual statements only; set a data API key for quarterly")
+        facts = await self._sec_facts(ticker)
+        rows = facts_to_statements(facts, limit=limit)[statement_type]
+        return [
+            FinancialStatement(
+                ticker=ticker,
+                period=period,
+                date=r["date"],
+                data=r["data"],
+                statement_type=statement_type,
+            )
+            for r in rows
+        ]
 
     async def get_income_statement(
         self,
@@ -113,8 +150,8 @@ class FinancialDataClient:
         if self.fmp_key:
             return await self._fmp_income_statement(ticker, period, limit)
         elif self.alpha_vantage_key:
-            return await self._av_income_statement(ticker, period)
-        raise ValueError("No financial data API key configured")
+            return await self._av_income_statement(ticker, period, limit)
+        return await self._sec_statements(ticker, "income_statement", period, limit)
 
     async def get_balance_sheet(
         self,
@@ -126,8 +163,8 @@ class FinancialDataClient:
         if self.fmp_key:
             return await self._fmp_balance_sheet(ticker, period, limit)
         elif self.alpha_vantage_key:
-            return await self._av_balance_sheet(ticker, period)
-        raise ValueError("No financial data API key configured")
+            return await self._av_balance_sheet(ticker, period, limit)
+        return await self._sec_statements(ticker, "balance_sheet", period, limit)
 
     async def get_cash_flow(
         self,
@@ -139,8 +176,8 @@ class FinancialDataClient:
         if self.fmp_key:
             return await self._fmp_cash_flow(ticker, period, limit)
         elif self.alpha_vantage_key:
-            return await self._av_cash_flow(ticker, period)
-        raise ValueError("No financial data API key configured")
+            return await self._av_cash_flow(ticker, period, limit)
+        return await self._sec_statements(ticker, "cash_flow", period, limit)
 
     async def get_stock_price(
         self,
@@ -162,7 +199,16 @@ class FinancialDataClient:
             return await self._fmp_profile(ticker)
         elif self.alpha_vantage_key:
             return await self._av_profile(ticker)
-        raise ValueError("No financial data API key configured")
+        facts = await self._sec_facts(ticker)
+        return CompanyProfile(
+            ticker=ticker,
+            name=facts.get("entityName", ticker),
+            sector="",
+            industry="",
+            market_cap=0,
+            description="",
+            exchange="",
+        )
 
     async def get_key_metrics(self, ticker: str, limit: int = 5) -> list[dict]:
         """Fetch key financial metrics (PE, EV/EBITDA, ROE, etc.)."""
@@ -349,14 +395,72 @@ class FinancialDataClient:
 
     # --- Alpha Vantage implementations ---
 
-    async def _av_income_statement(
-        self, ticker: str, period: str
+    # Alpha Vantage field name -> the FMP-style name the ratio code expects
+    _AV_FIELDS = {
+        "income_statement": {
+            "totalRevenue": "revenue", "costOfRevenue": "costOfRevenue",
+            "grossProfit": "grossProfit", "operatingIncome": "operatingIncome",
+            "netIncome": "netIncome", "ebitda": "ebitda", "interestExpense": "interestExpense",
+        },
+        "balance_sheet": {
+            "totalAssets": "totalAssets", "totalCurrentAssets": "totalCurrentAssets",
+            "totalLiabilities": "totalLiabilities",
+            "totalCurrentLiabilities": "totalCurrentLiabilities",
+            "totalShareholderEquity": "totalStockholdersEquity",
+            "cashAndCashEquivalentsAtCarryingValue": "cashAndCashEquivalents",
+            "inventory": "inventory", "currentNetReceivables": "netReceivables",
+            "currentAccountsPayable": "accountPayables",
+            "longTermDebt": "longTermDebt",
+            "shortTermDebt": "shortTermDebt", "currentDebt": "shortTermDebt",
+        },
+        "cash_flow": {
+            "operatingCashflow": "operatingCashFlow",
+            "capitalExpenditures": "capitalExpenditure",
+        },
+    }
+    _AV_FUNCTIONS = {
+        "income_statement": "INCOME_STATEMENT",
+        "balance_sheet": "BALANCE_SHEET",
+        "cash_flow": "CASH_FLOW",
+    }
+
+    @classmethod
+    def _normalize_av(cls, item: dict, statement_type: str) -> dict:
+        """Map an Alpha Vantage report to FMP-style numeric fields."""
+        out: dict = {"date": item.get("fiscalDateEnding", "")}
+        for src, dst in cls._AV_FIELDS[statement_type].items():
+            raw = item.get(src)
+            if raw in (None, "None", ""):
+                continue
+            try:
+                out.setdefault(dst, float(raw))
+            except (TypeError, ValueError):
+                continue
+        if statement_type == "balance_sheet" and ("longTermDebt" in out or "shortTermDebt" in out):
+            out["totalDebt"] = out.get("longTermDebt", 0.0) + out.get("shortTermDebt", 0.0)
+        if statement_type == "cash_flow":
+            if "capitalExpenditure" in out:
+                out["capitalExpenditure"] = -abs(out["capitalExpenditure"])
+            if "operatingCashFlow" in out and "capitalExpenditure" in out:
+                out["freeCashFlow"] = out["operatingCashFlow"] + out["capitalExpenditure"]
+        return out
+
+    async def _av_statement(
+        self, ticker: str, statement_type: str, period: str, limit: int
     ) -> list[FinancialStatement]:
-        url = f"https://www.alphavantage.co/query?function=INCOME_STATEMENT&symbol={ticker}&apikey={self.alpha_vantage_key}"
+        url = (
+            f"https://www.alphavantage.co/query?function={self._AV_FUNCTIONS[statement_type]}"
+            f"&symbol={ticker}&apikey={self.alpha_vantage_key}"
+        )
         async with httpx.AsyncClient() as client:
             resp = await client.get(url, timeout=15)
             resp.raise_for_status()
             data = resp.json()
+
+        # Alpha Vantage reports rate limits / errors with HTTP 200
+        for notice in ("Note", "Information", "Error Message"):
+            if notice in data and not data.get("annualReports"):
+                raise ValueError(f"Alpha Vantage: {data[notice]}")
 
         key = "annualReports" if period == "annual" else "quarterlyReports"
         return [
@@ -364,53 +468,20 @@ class FinancialDataClient:
                 ticker=ticker,
                 period=period,
                 date=item.get("fiscalDateEnding", ""),
-                data=item,
-                statement_type="income_statement",
+                data=self._normalize_av(item, statement_type),
+                statement_type=statement_type,
             )
-            for item in data.get(key, [])[:5]
+            for item in data.get(key, [])[:limit]
         ]
 
-    async def _av_balance_sheet(
-        self, ticker: str, period: str
-    ) -> list[FinancialStatement]:
-        url = f"https://www.alphavantage.co/query?function=BALANCE_SHEET&symbol={ticker}&apikey={self.alpha_vantage_key}"
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(url, timeout=15)
-            resp.raise_for_status()
-            data = resp.json()
+    async def _av_income_statement(self, ticker: str, period: str, limit: int = 5):
+        return await self._av_statement(ticker, "income_statement", period, limit)
 
-        key = "annualReports" if period == "annual" else "quarterlyReports"
-        return [
-            FinancialStatement(
-                ticker=ticker,
-                period=period,
-                date=item.get("fiscalDateEnding", ""),
-                data=item,
-                statement_type="balance_sheet",
-            )
-            for item in data.get(key, [])[:5]
-        ]
+    async def _av_balance_sheet(self, ticker: str, period: str, limit: int = 5):
+        return await self._av_statement(ticker, "balance_sheet", period, limit)
 
-    async def _av_cash_flow(
-        self, ticker: str, period: str
-    ) -> list[FinancialStatement]:
-        url = f"https://www.alphavantage.co/query?function=CASH_FLOW&symbol={ticker}&apikey={self.alpha_vantage_key}"
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(url, timeout=15)
-            resp.raise_for_status()
-            data = resp.json()
-
-        key = "annualReports" if period == "annual" else "quarterlyReports"
-        return [
-            FinancialStatement(
-                ticker=ticker,
-                period=period,
-                date=item.get("fiscalDateEnding", ""),
-                data=item,
-                statement_type="cash_flow",
-            )
-            for item in data.get(key, [])[:5]
-        ]
+    async def _av_cash_flow(self, ticker: str, period: str, limit: int = 5):
+        return await self._av_statement(ticker, "cash_flow", period, limit)
 
     async def _av_stock_price(self, ticker: str) -> list[StockPrice]:
         url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY_ADJUSTED&symbol={ticker}&outputsize=full&apikey={self.alpha_vantage_key}"
@@ -468,11 +539,13 @@ class FinancialDataClient:
         url = (
             f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/"
             f"{start_date.strftime('%Y-%m-%d')}/{end_date.strftime('%Y-%m-%d')}"
-            f"?adjusted=true&sort=desc&apiKey={self.polygon_key}"
+            f"?adjusted=true&sort=desc"
         )
 
         async with httpx.AsyncClient() as client:
-            resp = await client.get(url, timeout=15)
+            resp = await client.get(
+                url, timeout=15, headers={"Authorization": f"Bearer {self.polygon_key}"}
+            )
             resp.raise_for_status()
             data = resp.json()
 
@@ -491,9 +564,11 @@ class FinancialDataClient:
     # --- Finnhub implementations ---
 
     async def _finnhub_estimates(self, ticker: str) -> list[AnalystEstimate]:
-        url = f"https://finnhub.io/api/v1/stock/recommendation?symbol={ticker}&token={self.finnhub_key}"
+        url = f"https://finnhub.io/api/v1/stock/recommendation?symbol={ticker}"
         async with httpx.AsyncClient() as client:
-            resp = await client.get(url, timeout=15)
+            resp = await client.get(
+                url, timeout=15, headers={"X-Finnhub-Token": self.finnhub_key}
+            )
             resp.raise_for_status()
             data = resp.json()
 

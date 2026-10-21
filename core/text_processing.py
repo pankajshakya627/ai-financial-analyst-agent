@@ -40,16 +40,6 @@ class FinancialTextSplitter:
         r"(?i)CONTROLS\s+AND\s+PROCEDURES",
     ]
 
-    # Earnings call section patterns
-    EARNINGS_SECTION_PATTERNS = [
-        r"(?i)(operator|moderator)\s*:",
-        r"(?i)prepared\s+remarks",
-        r"(?i)question[s]?\s*(and|&)\s*answer[s]?",
-        r"(?i)Q&A\s+session",
-        r"(?i)opening\s+remarks",
-        r"(?i)closing\s+remarks",
-    ]
-
     def __init__(self, chunk_size: int = 1000, chunk_overlap: int = 200):
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
@@ -62,6 +52,10 @@ class FinancialTextSplitter:
             return self._split_earnings_call(text)
         else:
             return self._split_generic(text)
+
+    def _split_generic(self, text: str) -> list[TextChunk]:
+        """Split plain text (news, notes) with the recursive splitter."""
+        return self._recursive_split(text, 0)
 
     def _split_sec_filing(self, text: str) -> list[TextChunk]:
         """Split SEC filing respecting item/section boundaries."""
@@ -85,26 +79,24 @@ class FinancialTextSplitter:
         speaker_pattern = r"\n([A-Z][a-zA-Z\s\.]+)\s*(?:[-–—]|:)\s*"
         segments = re.split(speaker_pattern, text)
 
+        if len(segments) <= 1:
+            return self._recursive_split(text, 0)
+
+        # re.split with one capture group gives [preamble, speaker, dialogue, speaker, dialogue, ...]
+        turns = []
+        if segments[0].strip():
+            turns.append(("Introduction", segments[0]))
+        for i in range(1, len(segments) - 1, 2):
+            turns.append((segments[i].strip(), segments[i + 1]))
+
         chunks = []
-        current_pos = 0
-
-        if len(segments) > 1:
-            # Reassemble speaker + dialogue pairs
-            for i in range(0, len(segments) - 1, 2):
-                segment = segments[i]
-                if i + 1 < len(segments):
-                    speaker = segments[i + 1] if i > 0 else ""
-                    dialogue = segments[i] if i == 0 else segments[i + 1]
-
-                    combined = f"{speaker}: {dialogue}" if speaker else dialogue
-                    sub_chunks = self._recursive_split(combined.strip(), current_pos)
-                    for chunk in sub_chunks:
-                        chunk.section = speaker.strip() if speaker else "Introduction"
-                    chunks.extend(sub_chunks)
-                    current_pos += len(combined)
-        else:
-            chunks = self._recursive_split(text, 0)
-
+        position = 0
+        for speaker, dialogue in turns:
+            combined = f"{speaker}: {dialogue}" if speaker != "Introduction" else dialogue
+            for chunk in self._recursive_split(combined.strip(), position):
+                chunk.section = speaker
+                chunks.append(chunk)
+            position += len(combined)
         return chunks
 
     def _extract_sections(
@@ -229,14 +221,19 @@ class FinancialTextSplitter:
 
 def clean_financial_text(text: str) -> str:
     """Clean and normalize financial document text."""
-    # Remove excessive whitespace
-    text = re.sub(r"\s+", " ", text)
+    # Drop page numbers only where a page break makes them identifiable; a bare
+    # numeric line elsewhere may be a financial figure and must be preserved
+    text = re.sub(r"\f[ \t]*\d{1,3}[ \t]*(?=\n|$)", "\f", text)
+    text = re.sub(r"(?m)^ ?\d{1,3} ?\f", "\f", text)
+    # Form feeds become line breaks first so page boundaries survive
+    text = text.replace("\f", "\n").replace("\r\n", "\n").replace("\r", "\n")
+    # Collapse runs of spaces/tabs but keep newlines (paragraph/section structure)
+    text = re.sub(r"[^\S\n]+", " ", text)
     # Normalize dashes
     text = re.sub(r"[–—]", "-", text)
-    # Remove page numbers / headers that repeat
-    text = re.sub(r"\n\s*\d+\s*\n", "\n", text)
     # Normalize currency symbols
     text = text.replace("US$", "$").replace("USD ", "$")
-    # Remove form feed characters
-    text = text.replace("\f", "\n")
+    # Trim line edges and collapse 3+ newlines to a paragraph break
+    text = re.sub(r"(?m)^ | $", "", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()

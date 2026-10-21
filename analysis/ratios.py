@@ -5,7 +5,7 @@ Covers profitability, liquidity, leverage, efficiency, and valuation ratios.
 
 import logging
 from typing import Optional
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +76,7 @@ class FinancialRatioCalculator:
         """Profitability ratios."""
         revenue = self._get_num(income, "revenue", "totalRevenue")
         gross_profit = self._get_num(income, "grossProfit")
-        operating_income = self._get_num(income, "operatingIncome", "operatingExpenses")
+        operating_income = self._get_num(income, "operatingIncome")
         net_income = self._get_num(income, "netIncome", "netIncomeApplicableToCommonShares")
         total_assets = self._get_num(balance, "totalAssets")
         total_equity = self._get_num(balance, "totalStockholdersEquity", "totalShareholderEquity")
@@ -140,7 +140,7 @@ class FinancialRatioCalculator:
         current_liabilities = self._get_num(balance, "totalCurrentLiabilities")
         cash = self._get_num(balance, "cashAndCashEquivalents", "cashAndShortTermInvestments")
         inventory = self._get_num(balance, "inventory", "netInventory") or 0
-        receivables = self._get_num(balance, "netReceivables", "currentNetReceivables") or 0
+        self._get_num(balance, "netReceivables", "currentNetReceivables") or 0
 
         quick_assets = None
         if current_assets is not None and inventory is not None:
@@ -175,9 +175,7 @@ class FinancialRatioCalculator:
 
     def _leverage_ratios(self, income: dict, balance: dict) -> list[RatioResult]:
         """Leverage / solvency ratios."""
-        total_debt = self._get_num(balance, "totalDebt", "longTermDebt") or 0
-        short_term_debt = self._get_num(balance, "shortTermDebt", "currentPortionOfLongTermDebt") or 0
-        total_borrowings = total_debt + short_term_debt
+        total_borrowings = self._total_debt(balance) or 0
         total_assets = self._get_num(balance, "totalAssets")
         total_equity = self._get_num(balance, "totalStockholdersEquity", "totalShareholderEquity")
         ebitda = self._get_num(income, "ebitda")
@@ -292,7 +290,7 @@ class FinancialRatioCalculator:
         net_income = self._get_num(income, "netIncome")
         revenue = self._get_num(income, "revenue", "totalRevenue")
         ebitda = self._get_num(income, "ebitda")
-        total_debt = self._get_num(balance, "totalDebt", "longTermDebt") or 0
+        total_debt = self._total_debt(balance) or 0
         cash = self._get_num(balance, "cashAndCashEquivalents") or 0
         book_value = self._get_num(balance, "totalStockholdersEquity", "totalShareholderEquity")
         fcf = self._get_num(cash_flow, "freeCashFlow")
@@ -359,7 +357,7 @@ class FinancialRatioCalculator:
         net_income = self._get_num(income, "netIncome")
         capex = self._get_num(cash_flow, "capitalExpenditure", "capitalExpenditures")
         revenue = self._get_num(income, "revenue", "totalRevenue")
-        total_debt = self._get_num(balance, "totalDebt", "longTermDebt") or 0
+        total_debt = self._total_debt(balance) or 0
 
         fcf = None
         if operating_cf is not None and capex is not None:
@@ -399,6 +397,19 @@ class FinancialRatioCalculator:
                 benchmark="<5% is asset-light; >15% is capital-intensive",
             ),
         ]
+
+    @classmethod
+    def _total_debt(cls, balance: dict) -> Optional[float]:
+        """Total borrowings. Prefers the reported total (which already includes
+        short-term debt); otherwise sums long-term and short-term debt."""
+        total = cls._get_num(balance, "totalDebt")
+        if total is not None:
+            return total
+        long_term = cls._get_num(balance, "longTermDebt")
+        short_term = cls._get_num(balance, "shortTermDebt", "currentPortionOfLongTermDebt")
+        if long_term is None and short_term is None:
+            return None
+        return (long_term or 0) + (short_term or 0)
 
     @staticmethod
     def _get_num(data: dict, *keys: str) -> Optional[float]:

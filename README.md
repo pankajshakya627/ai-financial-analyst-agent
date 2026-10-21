@@ -15,14 +15,13 @@ flowchart TB
     end
 
     subgraph Orchestrator["Agent Orchestrator"]
-        Intent["Intent Detector"]
-        Router["Agent Router"]
+        Loop["Tool-Calling Loop"]
     end
 
-    subgraph Agents["Specialized Agents"]
-        Research["Research Agent<br/>SEC/Earnings/News"]
-        Analysis["Analysis Agent<br/>Ratios/Valuation/Risk"]
-        Data["Data Agent<br/>Statements/Profiles"]
+    subgraph Tools["Agent Tools"]
+        Search["Search Tools<br/>SEC/Earnings/News"]
+        Analyze["Analysis Tools<br/>Ratios/Trends/Valuation/Risk"]
+        DataTools["Data Tools<br/>Statements/Profiles/Prices"]
     end
 
     subgraph DataLayer["Data Layer"]
@@ -53,13 +52,12 @@ flowchart TB
     end
 
     UserInterfaces --> Orchestrator
-    Intent --> Router
-    Router --> Agents
-    Agents --> DataLayer
-    Agents --> LLM
+    Loop --> Tools
+    Tools --> DataLayer
+    Tools --> LLM
     Ingestion --> Processing
     Processing --> Storage
-    Storage --> Agents
+    Storage --> Tools
 ```
 
 ### System Overview (ASCII)
@@ -273,16 +271,28 @@ python main.py serve
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/v1/query` | Ask any financial question |
-| POST | `/api/v1/ingest` | Ingest SEC filings + news |
+| POST | `/api/v1/query` | Ask any financial question (optional `ticker` focuses it) |
+| POST | `/api/v1/query/stream` | Stream an answer as server-sent events (`sources`, `token`, `done`). Stateless: no tool loop or conversation history (`session_id` is ignored) |
+| POST | `/api/v1/ingest` | Ingest SEC filings + news. Runs in the background and returns a job id (HTTP 202); set `run_in_background=false` to wait |
+| GET | `/api/v1/jobs/{job_id}` | Status and result of a background ingestion job |
 | POST | `/api/v1/ingest/earnings-call` | Ingest earnings transcript |
 | POST | `/api/v1/analyze` | Run structured analysis |
 | GET | `/api/v1/financials/{ticker}` | Get financial statements |
 | GET | `/api/v1/profile/{ticker}` | Get company profile |
 | GET | `/api/v1/ratios/{ticker}` | Calculate financial ratios |
+| GET | `/api/v1/trends/{ticker}` | Multi-year growth, CAGR and margin trends (`include_ttm=true` adds trailing-twelve-month totals; needs a data API key) |
+| POST | `/api/v1/conversation/reset` | Clear one conversation (`session_id` query param) |
 | GET | `/api/v1/knowledge-base/stats` | Vector store statistics |
 | GET | `/api/v1/config` | Current configuration |
 | GET | `/health` | Health check |
+
+### Security
+
+- Set `API_KEY` in `.env` to require an `X-API-Key` header on every `/api/v1` endpoint (`/health` stays public). Without it the server logs a warning and is unauthenticated.
+- Requests are rate limited per client (`RATE_LIMIT_PER_MINUTE`, default 60) and return `429` with `Retry-After` when exceeded.
+- `/api/v1/query` keeps conversation history per `session_id` (returned in the response; send it back to continue). Sessions are namespaced per API key. Reset one with `POST /api/v1/conversation/reset?session_id=...`.
+- Tickers, form types, analysis types and sizes are validated; provider keys are redacted from logs and error messages.
+- Set `CORS_ORIGINS` to your real front-end origins in production.
 
 ### Example API Call
 
@@ -348,6 +358,11 @@ To add more companies, edit the `COMPANY_NAMES` dictionary in `ingestion/financi
 
 ## Analysis Capabilities
 
+- **Multi-period trends**: year-over-year growth, CAGR and margin changes (`analysis/trends.py`), included in every analysis prompt and in `/api/v1/trends/{ticker}`
+- **Figure checking**: numbers in the narrative are compared with the statements, ratios, trends and retrieved sources; unmatched figures are returned as `verification` and listed in the report under "Figures To Double-Check" (the text is never altered)
+- **Numbered citations**: retrieved passages are labelled `[S1]`, `[S2]`... and the response `sources` list uses the same ids, so claims can be traced
+- **No data-API key needed for core statements**: without FMP/Alpha Vantage keys the client falls back to SEC XBRL company facts (annual income statement, balance sheet and cash flow). Quarterly statements, prices and analyst estimates still need an API key
+
 - **Comprehensive Analysis**: Full investment research report
 - **Earnings Analysis**: Quarter-over-quarter performance
 - **Risk Analysis**: Operational, financial, regulatory, market risks
@@ -371,12 +386,14 @@ ai_financial_analyst/
 │   ├── sec_edgar.py         # SEC EDGAR downloader/parser
 │   ├── earnings_calls.py    # Earnings call processor
 │   ├── financial_news.py    # Multi-source news aggregator
+│   ├── sec_xbrl.py          # SEC XBRL facts -> statements
 │   └── pipeline.py          # Unified ingestion orchestrator
 ├── rag/
 │   └── retriever.py         # Multi-collection RAG retriever
 ├── analysis/
 │   ├── financial_data.py    # Financial data API client
 │   ├── ratios.py            # 30+ financial ratio calculator
+│   ├── trends.py            # Multi-period growth and margin trends
 │   └── financial_analyzer.py # LLM-powered analysis engine
 ├── agent/
 │   ├── orchestrator.py      # Agent brain (tool routing)
@@ -443,109 +460,6 @@ The system maintains separate ChromaDB collections for different data types:
 1. **RSS Feed News Ingestion**: Added automatic fallback to RSS feeds for financial news when API keys are not available. Supports MarketWatch, CNBC, Investing.com, and Business Insider.
 
 2. **Company Name Matching**: Enhanced RSS news matching with company name mappings for 20+ major tech and finance companies (e.g., "Apple" for AAPL, "Microsoft" for MSFT).
-
-3. **Intent-Based Agent Routing**: Implemented intelligent intent detection and multi-agent orchestration system:
-   - **Intent Detector**: Classifies queries into 15+ intent categories using keyword matching, pattern recognition, and LLM fallback
-   - **Research Agent**: Specializes in SEC filings, earnings calls, and news search
-   - **Analysis Agent**: Handles comprehensive analysis, risk assessment, valuation, and ratio calculations
-   - **Data Agent**: Manages financial statements, company profiles, stock prices, and data ingestion
-   - Automatic routing based on detected intent for optimal task execution
-
-## Intent Categories
-
-The system recognizes the following intent categories:
-
-| Category | Description | Example Queries |
-|----------|-------------|-----------------|
-| `sec_filing_query` | SEC filing search | "What did Apple's 10-K say about risk factors?" |
-| `earnings_query` | Earnings call transcripts | "What did the CEO say about guidance on the earnings call?" |
-| `news_query` | Financial news search | "Recent news about Microsoft" |
-| `financial_data_query` | Financial statements | "Show me Tesla's income statement for last quarter" |
-| `comprehensive_analysis` | Full analysis | "Analyze whether I should invest in NVDA" |
-| `risk_analysis` | Risk assessment | "What are the risks of investing in AMZN?" |
-| `valuation_analysis` | Valuation metrics | "Is GOOGL overvalued or undervalued?" |
-| `ratio_analysis` | Financial ratios | "Calculate ROE and debt-to-equity for JPM" |
-| `company_profile` | Company overview | "Tell me about Apple's business model" |
-| `stock_price` | Stock price data | "What's the stock price performance for TSLA this year?" |
-| `analyst_estimates` | Analyst recommendations | "What are analysts saying about AAPL?" |
-| `ingest_data` | Data ingestion | "Download SEC filings for MSFT" |
-
-## Agent Architecture
-
-### Agent Routing Flow (Mermaid)
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant ID as Intent Detector
-    participant Router as Agent Router
-    participant RA as Research Agent
-    participant AA as Analysis Agent
-    participant DA as Data Agent
-    participant DB as Database
-
-    User->>ID: "What are Apple's risk factors?"
-    ID->>ID: Classify Intent
-    ID-->>Router: sec_filing_query<br/>(confidence: 0.92)
-    
-    Router->>Router: Route to Agent
-    Router->>RA: Execute Search
-    
-    RA->>DB: Query SEC Filings
-    DB-->>RA: Retrieved Documents
-    RA-->>Router: AgentResult
-    
-    Router->>Router: Synthesize Response
-    Router-->>User: Answer with Citations
-    
-    Note over ID,DA: Alternative Routes
-    User->>ID: "Analyze NVDA valuation"
-    ID-->>Router: valuation_analysis
-    Router->>AA: Execute Analysis
-    AA-->>User: Valuation Report
-    
-    User->>ID: "Get MSFT financial statements"
-    ID-->>Router: financial_data_query
-    Router->>DA: Fetch Data
-    DA-->>User: Financial Data
-```
-
-### Agent Architecture (ASCII)
-
-```
-                    User Query
-                        │
-                        ▼
-                ┌───────────────┐
-                │   Intent      │
-                │   Detector    │
-                └───────┬───────┘
-                        │
-        ┌───────────────┼───────────────┐
-        │               │               │
-        ▼               ▼               ▼
-┌──────────────┐ ┌──────────────┐ ┌──────────────┐
-│  Research    │ │  Analysis    │ │    Data      │
-│   Agent      │ │   Agent      │ │    Agent     │
-│              │ │              │ │              │
-│ • SEC Search │ │ • Comprehensive│ │ • Financial  │
-│ • Earnings   │ │ • Risk       │ │   Statements │
-│ • News       │ │ • Valuation  │ │ • Profile    │
-│              │ │ • Ratios     │ │ • Stock Price│
-└──────────────┘ └──────────────┘ └──────────────┘
-        │               │               │
-        └───────────────┼───────────────┘
-                        │
-                        ▼
-                ┌───────────────┐
-                │   Response    │
-                │   Synthesis   │
-                └───────┬───────┘
-                        │
-                        ▼
-                  Final Answer
-                  + Citations
-```
 
 ## Docker
 

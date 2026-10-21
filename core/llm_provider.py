@@ -345,7 +345,6 @@ class OllamaClient(LLMClient):
         Falls back to prompt-based tool selection for older models.
         """
         import httpx
-        import json as _json
 
         messages = []
         if system_prompt:

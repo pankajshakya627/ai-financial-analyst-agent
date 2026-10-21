@@ -5,7 +5,8 @@ Produces structured financial analysis reports in multiple formats.
 
 import json
 import logging
-from datetime import datetime
+import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -21,11 +22,18 @@ class ReportGenerator:
     def __init__(self):
         self.reports_dir = Path(settings.reports_dir)
         self.reports_dir.mkdir(parents=True, exist_ok=True)
+        self.last_markdown_path: Optional[Path] = None
+        self.last_json_path: Optional[Path] = None
+
+    def _report_path(self, analysis: AnalysisResult, extension: str) -> Path:
+        """Build a report path whose name cannot escape the reports directory."""
+        safe = lambda v: re.sub(r"[^A-Za-z0-9_-]", "_", str(v))[:40]
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return self.reports_dir / f"{safe(analysis.ticker)}_{safe(analysis.analysis_type)}_{stamp}.{extension}"
 
     def generate_markdown_report(
         self,
         analysis: AnalysisResult,
-        include_raw_data: bool = False,
     ) -> str:
         """Generate a full Markdown report from an analysis result."""
         sections = [
@@ -37,15 +45,16 @@ class ReportGenerator:
             self._risks_section(analysis),
             self._catalysts_section(analysis),
             self._sources_section(analysis),
+            self._verification_section(analysis),
             self._disclaimer(),
         ]
 
         report = "\n\n".join(s for s in sections if s)
 
         # Save to disk
-        filename = f"{analysis.ticker}_{analysis.analysis_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
-        filepath = self.reports_dir / filename
+        filepath = self._report_path(analysis, "md")
         filepath.write_text(report)
+        self.last_markdown_path = filepath
         logger.info(f"Report saved: {filepath}")
 
         return report
@@ -56,7 +65,7 @@ class ReportGenerator:
             "metadata": {
                 "ticker": analysis.ticker,
                 "analysis_type": analysis.analysis_type,
-                "generated_at": datetime.utcnow().isoformat(),
+                "generated_at": datetime.now(timezone.utc).isoformat(),
                 "disclaimer": "This report is for informational purposes only and does not constitute investment advice.",
             },
             "executive_summary": analysis.summary,
@@ -66,11 +75,13 @@ class ReportGenerator:
             "risks": analysis.risks,
             "catalysts": analysis.catalysts,
             "sources": analysis.sources,
+            "trends": analysis.trends,
+            "verification": analysis.verification,
         }
 
-        filename = f"{analysis.ticker}_{analysis.analysis_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        filepath = self.reports_dir / filename
+        filepath = self._report_path(analysis, "json")
         filepath.write_text(json.dumps(report, indent=2, default=str))
+        self.last_json_path = filepath
         logger.info(f"JSON report saved: {filepath}")
 
         return report
@@ -173,6 +184,19 @@ class ReportGenerator:
                 lines.append(f"- [{source_type}: {detail} ({date})]({url})")
             else:
                 lines.append(f"- {source_type}: {detail} ({date})")
+        return "\n".join(lines)
+
+    def _verification_section(self, analysis: AnalysisResult) -> str:
+        v = analysis.verification or {}
+        unsupported = v.get("unsupported") or []
+        if not unsupported:
+            return ""
+        lines = [
+            "## Figures To Double-Check\n",
+            f"{v.get('unsupported_count', len(unsupported))} of {v.get('checked', 0)} figures "
+            "in the narrative could not be matched to the supplied data or sources:\n",
+        ]
+        lines += [f"- `{u['figure']}` in \"…{u['context']}…\"" for u in unsupported]
         return "\n".join(lines)
 
     def _disclaimer(self) -> str:

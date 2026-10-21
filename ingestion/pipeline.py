@@ -3,9 +3,10 @@ Unified ingestion pipeline that orchestrates document fetching,
 parsing, chunking, and vector store insertion.
 """
 
+import hashlib
 import logging
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from config.settings import settings
 from core.text_processing import FinancialTextSplitter, clean_financial_text
@@ -164,7 +165,7 @@ class IngestionPipeline:
             doc_chunks = []
 
             # Chunk prepared remarks
-            for turn in transcript.prepared_remarks:
+            for t_idx, turn in enumerate(transcript.prepared_remarks):
                 cleaned = clean_financial_text(turn.text)
                 chunks = self.text_splitter.split_text(cleaned, doc_type="earnings_call")
                 for i, chunk in enumerate(chunks):
@@ -182,12 +183,12 @@ class IngestionPipeline:
                                 "speaker_role": turn.role,
                                 "chunk_index": i,
                             },
-                            doc_id=f"ec_{ticker}_{quarter}_{turn.speaker}_{i}",
+                            doc_id=f"ec_{ticker}_{quarter}_pr{t_idx}_{i}",
                         )
                     )
 
             # Chunk Q&A
-            for turn in transcript.q_and_a:
+            for t_idx, turn in enumerate(transcript.q_and_a):
                 cleaned = clean_financial_text(turn.text)
                 chunks = self.text_splitter.split_text(cleaned, doc_type="earnings_call")
                 for i, chunk in enumerate(chunks):
@@ -205,7 +206,7 @@ class IngestionPipeline:
                                 "speaker_role": turn.role,
                                 "chunk_index": i,
                             },
-                            doc_id=f"ec_{ticker}_{quarter}_qa_{turn.speaker}_{i}",
+                            doc_id=f"ec_{ticker}_{quarter}_qa{t_idx}_{i}",
                         )
                     )
 
@@ -255,7 +256,7 @@ class IngestionPipeline:
                             "url": article.url,
                             "category": article.category,
                         },
-                        doc_id=f"news_{ticker}_{i}_{datetime.now().strftime('%Y%m%d')}",
+                        doc_id=f"news_{ticker}_{hashlib.sha1((article.url or article.title).encode()).hexdigest()[:16]}",
                     )
                 )
 
@@ -288,7 +289,7 @@ class IngestionPipeline:
             "ticker": ticker,
             "sec_filings": {},
             "news": {},
-            "started_at": datetime.utcnow().isoformat(),
+            "started_at": datetime.now(timezone.utc).isoformat(),
         }
 
         # Ingest SEC filings
@@ -299,10 +300,13 @@ class IngestionPipeline:
             results["sec_filings"][form_type] = sec_stats
 
         # Ingest news
-        results["news"] = await self.ingest_news(
-            ticker=ticker, days_back=news_days_back
-        )
+        if news_days_back > 0:
+            results["news"] = await self.ingest_news(
+                ticker=ticker, days_back=news_days_back
+            )
+        else:
+            results["news"] = {"skipped": True, "articles_fetched": 0, "chunks_created": 0}
 
-        results["completed_at"] = datetime.utcnow().isoformat()
+        results["completed_at"] = datetime.now(timezone.utc).isoformat()
         logger.info(f"Full ingestion complete for {ticker}: {results}")
         return results

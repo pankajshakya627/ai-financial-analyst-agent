@@ -7,7 +7,6 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Optional
 
-import numpy as np
 
 from config.settings import settings, EmbeddingProvider
 
