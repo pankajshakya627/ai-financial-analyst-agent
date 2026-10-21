@@ -65,19 +65,27 @@ def build_series(financials: dict) -> dict[str, list[tuple[str, float]]]:
 def yoy_growth(points: list[tuple[str, float]]) -> list[tuple[str, Optional[float]]]:
     """Period-over-period growth; None when the prior value is not positive."""
     growth = []
-    for (_, prev), (date, cur) in zip(points, points[1:]):
-        growth.append((date, (cur - prev) / prev if prev > 0 else None))
+    for (prev_date, prev), (date, cur) in zip(points, points[1:]):
+        try:
+            adjacent_years = int(date[:4]) - int(prev_date[:4]) == 1
+        except (TypeError, ValueError):
+            adjacent_years = False
+        growth.append((date, (cur - prev) / prev if adjacent_years and prev > 0 else None))
     return growth
 
 
 def cagr(points: list[tuple[str, float]]) -> Optional[float]:
-    """Compound annual growth rate across the series (one point per year)."""
+    """Compound annual growth rate across the series (one point per fiscal year)."""
     if len(points) < 2:
         return None
     first, last = points[0][1], points[-1][1]
     if first <= 0 or last <= 0:
         return None
-    return (last / first) ** (1 / (len(points) - 1)) - 1
+    try:
+        years = int(points[-1][0][:4]) - int(points[0][0][:4])
+    except (TypeError, ValueError):
+        return None
+    return (last / first) ** (1 / years) - 1 if years > 0 else None
 
 
 def compute_trends(financials: dict) -> dict:
