@@ -238,13 +238,25 @@ class SECEdgarClient:
             return {"full_text": text}
 
         # Find section boundaries
-        found_sections = []
+        # Every heading hit, including table-of-contents entries
+        all_hits = []
         for name, pattern in section_map.items():
-            match = re.search(pattern, text)
-            if match:
-                found_sections.append((name, match.start()))
+            for match in re.finditer(pattern, text):
+                all_hits.append((match.start(), name))
+        all_hits.sort()
 
-        found_sections.sort(key=lambda x: x[1])
+        # For each section keep the hit followed by the most text before the
+        # next heading; table-of-contents entries are followed by almost nothing.
+        best: dict[str, tuple[int, int]] = {}
+        for idx, (start, name) in enumerate(all_hits):
+            next_start = all_hits[idx + 1][0] if idx + 1 < len(all_hits) else len(text)
+            length = next_start - start
+            if name not in best or length > best[name][1]:
+                best[name] = (start, length)
+
+        found_sections = sorted(
+            ((name, start) for name, (start, _) in best.items()), key=lambda x: x[1]
+        )
 
         for i, (name, start) in enumerate(found_sections):
             end = found_sections[i + 1][1] if i + 1 < len(found_sections) else len(text)

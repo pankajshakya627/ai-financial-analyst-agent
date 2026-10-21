@@ -250,7 +250,10 @@ class FinancialNewsIngester:
                     
                     # Look for any of the search terms in title or content
                     text_to_search = f"{title} {summary} {content}"
-                    if not any(term in text_to_search for term in search_terms):
+                    if not any(
+                        re.search(rf"\b{re.escape(term)}\b", text_to_search)
+                        for term in search_terms
+                    ):
                         continue
                     
                     # Extract source
@@ -277,41 +280,9 @@ class FinancialNewsIngester:
             if len(articles) >= max_articles:
                 break
         
-        # If no ticker-specific articles found, fetch general market news
-        if len(articles) < 5:
-            logger.info(f"No ticker-specific news found for {ticker}, fetching general market news")
-            for feed_name, feed_url in RSS_FEEDS.items():
-                try:
-                    async with httpx.AsyncClient() as client:
-                        resp = await client.get(feed_url, timeout=15, follow_redirects=True)
-                        resp.raise_for_status()
-                        
-                    feed = feedparser.parse(resp.text)
-                    
-                    for entry in feed.entries[:10]:
-                        published_at = self._parse_rss_date(entry)
-                        
-                        articles.append(
-                            NewsArticle(
-                                title=entry.get("title", ""),
-                                summary=entry.get("summary", "")[:500] if entry.get("summary") else "",
-                                source=feed.feed.get("title", feed_name),
-                                url=entry.get("link", ""),
-                                published_at=published_at.isoformat() if published_at else datetime.now().isoformat(),
-                                tickers=[ticker],
-                                category="market_news",
-                            )
-                        )
-                        
-                        if len(articles) >= max_articles:
-                            break
-                            
-                except Exception as e:
-                    logger.warning(f"RSS feed {feed_name} failed: {e}")
-                
-                if len(articles) >= max_articles:
-                    break
-        
+        if not articles:
+            logger.info(f"No ticker-specific RSS news found for {ticker}")
+
         logger.info(f"Fetched {len(articles)} articles from RSS feeds for {ticker}")
         return articles
 

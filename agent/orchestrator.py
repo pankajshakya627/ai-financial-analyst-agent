@@ -123,13 +123,15 @@ class FinancialAgentOrchestrator:
                 system_prompt=ORCHESTRATOR_SYSTEM_PROMPT,
             )
 
-            # If LLM returned text without tool calls, we're done
-            if not llm_response.get("tool_calls") and llm_response.get("text"):
-                final_answer = llm_response["text"]
-                break
+            # No tool calls means the model has finished; its text is the answer
+            if not llm_response.get("tool_calls"):
+                if llm_response.get("text"):
+                    final_answer = llm_response["text"]
+                    break
+                continue
 
             # Execute each tool call
-            for tool_call in llm_response.get("tool_calls", []):
+            for call_idx, tool_call in enumerate(llm_response["tool_calls"]):
                 tool_name = tool_call["name"]
                 tool_args = tool_call["arguments"]
                 tools_used.append(tool_name)
@@ -138,7 +140,7 @@ class FinancialAgentOrchestrator:
 
                 try:
                     result = await self._execute_tool(tool_name, tool_args)
-                    tool_results[f"{tool_name}_{iteration}"] = result
+                    tool_results[f"{tool_name}_{iteration}_{call_idx}"] = result
 
                     # Collect sources
                     if isinstance(result, dict) and "sources" in result:
@@ -146,12 +148,8 @@ class FinancialAgentOrchestrator:
 
                 except Exception as e:
                     logger.error(f"Tool execution error: {tool_name}: {e}")
-                    tool_results[f"{tool_name}_{iteration}"] = {"error": str(e)}
+                    tool_results[f"{tool_name}_{iteration}_{call_idx}"] = {"error": str(e)}
 
-            # If we have text alongside tool calls, check if it's a final answer
-            if llm_response.get("text") and iteration > 0:
-                final_answer = llm_response["text"]
-                break
         else:
             # Exceeded max iterations — synthesize from what we have
             final_answer = await self._synthesize_response(user_query, tool_results)

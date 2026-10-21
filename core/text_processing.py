@@ -63,6 +63,10 @@ class FinancialTextSplitter:
         else:
             return self._split_generic(text)
 
+    def _split_generic(self, text: str) -> list[TextChunk]:
+        """Split plain text (news, notes) with the recursive splitter."""
+        return self._recursive_split(text, 0)
+
     def _split_sec_filing(self, text: str) -> list[TextChunk]:
         """Split SEC filing respecting item/section boundaries."""
         sections = self._extract_sections(text, self.SEC_SECTION_PATTERNS)
@@ -229,14 +233,17 @@ class FinancialTextSplitter:
 
 def clean_financial_text(text: str) -> str:
     """Clean and normalize financial document text."""
-    # Remove excessive whitespace
-    text = re.sub(r"\s+", " ", text)
+    # Form feeds become line breaks first so page boundaries survive
+    text = text.replace("\f", "\n").replace("\r\n", "\n").replace("\r", "\n")
+    # Collapse runs of spaces/tabs but keep newlines (paragraph/section structure)
+    text = re.sub(r"[^\S\n]+", " ", text)
     # Normalize dashes
     text = re.sub(r"[–—]", "-", text)
-    # Remove page numbers / headers that repeat
-    text = re.sub(r"\n\s*\d+\s*\n", "\n", text)
+    # Remove lines that are only a page number
+    text = re.sub(r"(?m)^ ?\d{1,3} ?$\n?", "", text)
     # Normalize currency symbols
     text = text.replace("US$", "$").replace("USD ", "$")
-    # Remove form feed characters
-    text = text.replace("\f", "\n")
+    # Trim line edges and collapse 3+ newlines to a paragraph break
+    text = re.sub(r"(?m)^ | $", "", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()

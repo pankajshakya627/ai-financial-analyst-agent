@@ -45,8 +45,9 @@ class ChromaEmbeddingFunction:
         return self.engine.embed_texts(input)
 
     def name(self) -> str:
-        """Return the name of the embedding function for ChromaDB compatibility."""
-        return "ollama"
+        """Name identifying the embedding model, so ChromaDB can detect a mismatch."""
+        model = getattr(self.engine, "model_name", type(self.engine).__name__)
+        return f"{type(self.engine).__name__}:{model}"
 
 
 class VectorStoreManager:
@@ -82,8 +83,13 @@ class VectorStoreManager:
         documents = []
         metadatas = []
 
+        seen_ids = set()
+        base = collection.count()
         for i, chunk in enumerate(chunks):
-            doc_id = chunk.doc_id or f"{collection_name}_{collection.count() + i}"
+            doc_id = chunk.doc_id or f"{collection_name}_{base + i}"
+            if doc_id in seen_ids:  # duplicate IDs in one batch make Chroma reject it
+                continue
+            seen_ids.add(doc_id)
             ids.append(doc_id)
             documents.append(chunk.content)
             metadatas.append(chunk.metadata)
@@ -92,7 +98,7 @@ class VectorStoreManager:
             return 0
 
         # ChromaDB handles batching internally
-        collection.add(ids=ids, documents=documents, metadatas=metadatas)
+        collection.upsert(ids=ids, documents=documents, metadatas=metadatas)
         logger.info(f"Added {len(documents)} chunks to collection '{collection_name}'")
         return len(documents)
 
@@ -123,9 +129,9 @@ class VectorStoreManager:
         retrieved = []
         for i in range(len(results["ids"][0])):
             distance = results["distances"][0][i] if results["distances"] else 1.0
-            # ChromaDB cosine distance: 0 = identical, 2 = opposite
-            # Convert to similarity score: 1 - (distance / 2)
-            score = 1.0 - (distance / 2.0)
+            # ChromaDB cosine distance = 1 - cosine similarity, so
+            # similarity is 1 - distance (range -1..1)
+            score = 1.0 - distance
 
             if score >= settings.similarity_threshold:
                 retrieved.append(

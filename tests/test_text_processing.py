@@ -63,3 +63,18 @@ class TestFinancialTextSplitter:
         text = " ".join(["word"] * 200)
         chunks = splitter.split_text(text)
         assert len(chunks) > 1
+
+
+class TestRegressions:
+    def test_cleaning_keeps_paragraphs(self):
+        cleaned = clean_financial_text("ITEM 1A. RISK FACTORS\n\nPara one.\n\n\n\nPara two.\n12\nmore")
+        assert "\n\n" in cleaned
+        assert "\n12\n" not in cleaned
+        assert "Para one." in cleaned and "more" in cleaned
+
+    def test_sec_sections_split_after_cleaning(self):
+        splitter = FinancialTextSplitter(chunk_size=200, chunk_overlap=20)
+        body = "Risk sentence. " * 30
+        text = clean_financial_text(f"ITEM 1. BUSINESS\n{body}\n\nITEM 1A. RISK FACTORS\n{body}")
+        sections = {c.section for c in splitter.split_text(text, doc_type="sec_filing")}
+        assert any("RISK" in (s or "").upper() for s in sections)
