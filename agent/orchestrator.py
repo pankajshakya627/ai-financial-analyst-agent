@@ -214,12 +214,12 @@ class FinancialAgentOrchestrator:
         )
         run_state["next_source_id"] += len(result.sources)
         return {
+            "context": result.context_text[:context_limit],
+            "sources": result.sources,
             "documents": [
                 {"content": d.content[:500], "metadata": d.metadata, "score": d.score}
                 for d in result.documents
             ],
-            "sources": result.sources,
-            "context": result.context_text[:context_limit],
         }
 
     def _validate_args(self, tool_name: str, args: dict) -> dict:
