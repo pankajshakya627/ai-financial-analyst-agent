@@ -231,7 +231,14 @@ def _new_job(kind: str, ticker: str) -> str:
         "error": None,
     }
     while len(jobs) > MAX_JOBS:
-        jobs.popitem(last=False)
+        finished_id = next(
+            (key for key, job in jobs.items() if job["status"] in {"completed", "failed"}),
+            None,
+        )
+        if finished_id is None:
+            jobs.pop(job_id, None)
+            raise HTTPException(status_code=429, detail="Ingestion job queue is full")
+        jobs.pop(finished_id)
     return job_id
 
 
