@@ -18,7 +18,7 @@ _SCALE = {
 }
 
 _FIGURE = re.compile(
-    r"(?<![\w.\[])(?P<dollar>\$\s?)?(?P<num>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
+    r"(?<![\w.\[])(?P<sign>-)?(?P<dollar>\$\s?)?(?P<num>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
     r"(?:\s?(?P<unit>%|percent\b|trillion\b|billion\b|million\b|thousand\b|bn\b|mm\b|[TBMK]\b))?",
 )
 
@@ -26,6 +26,8 @@ _FIGURE = re.compile(
 def _parse(match: re.Match) -> Optional[dict]:
     raw = match.group("num")
     value = float(raw.replace(",", ""))
+    if match.group("sign"):
+        value = -value
     unit = (match.group("unit") or "").lower()
     dollar = bool(match.group("dollar"))
     is_pct = unit in ("%", "percent")
@@ -35,9 +37,9 @@ def _parse(match: re.Match) -> Optional[dict]:
     if re.match(r"-[KQkq]\b", tail) or re.match(r"\d", tail):  # 10-K, 10-Q
         return None
     has_decimal = "." in raw
-    if not (dollar or unit or has_decimal or value >= 1000):
+    if not (dollar or unit or has_decimal or abs(value) >= 1000):
         return None
-    if not (dollar or unit or has_decimal) and 1900 <= value <= 2100:  # years
+    if not (dollar or unit or has_decimal) and 1900 <= abs(value) <= 2100:  # years
         return None
 
     decimals = len(raw.split(".")[1]) if has_decimal else 0
@@ -58,9 +60,9 @@ def extract_figures(text: str) -> list[dict]:
 
 
 def _matches(figure: dict, references: Iterable[float]) -> bool:
-    value = abs(figure["value"])
-    tol = max(0.01 * value, 0.5 * figure["precision"])
-    return any(abs(abs(ref) - value) <= tol for ref in references)
+    value = figure["value"]
+    tol = max(0.01 * abs(value), 0.5 * figure["precision"])
+    return any(abs(ref - value) <= tol for ref in references)
 
 
 def collect_references(financials: dict, ratios: list, trends: dict) -> tuple[set, set]:

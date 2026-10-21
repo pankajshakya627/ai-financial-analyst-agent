@@ -32,6 +32,18 @@ def test_ignores_years_filings_and_citations():
     assert figs == []
 
 
+def test_opposite_sign_figures_are_not_supported():
+    loss = {"income_statement": [{"date": "2024-12-31", "data": {"netIncome": -10_000_000}}]}
+    assert [u["figure"] for u in verify_figures("Net income was $10.0 million.", loss, [], {})["unsupported"]] == ["$10.0 million"]
+    assert verify_figures("Net income was -$10.0 million.", loss, [], {})["unsupported"] == []
+
+    trends = {"metrics": {"revenue": {"series": [{"date": "2024", "value": 100}],
+                                       "yoy_growth": [{"year": "2024", "growth": -0.10}], "cagr": None}},
+              "margins": {}}
+    assert [u["figure"] for u in verify_figures("Revenue grew 10.0%.", {}, [], trends)["unsupported"]] == ["10.0%"]
+    assert verify_figures("Revenue fell -10.0%.", {}, [], trends)["unsupported"] == []
+
+
 def _q(date, revenue):
     return {"date": date, "data": {"revenue": revenue}}
 
