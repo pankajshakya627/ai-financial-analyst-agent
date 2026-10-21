@@ -146,22 +146,6 @@ class VectorStoreManager:
         retrieved.sort(key=lambda x: x.score, reverse=True)
         return retrieved
 
-    def multi_collection_query(
-        self,
-        collection_names: list[str],
-        query_text: str,
-        top_k: Optional[int] = None,
-    ) -> list[RetrievedDocument]:
-        """Query across multiple collections and merge results."""
-        all_results = []
-        for name in collection_names:
-            results = self.query(name, query_text, top_k=top_k)
-            all_results.extend(results)
-
-        # Re-rank by score across collections
-        all_results.sort(key=lambda x: x.score, reverse=True)
-        return all_results[: (top_k or settings.top_k_results)]
-
     def delete_collection(self, name: str) -> None:
         """Delete an entire collection."""
         self.client.delete_collection(name)

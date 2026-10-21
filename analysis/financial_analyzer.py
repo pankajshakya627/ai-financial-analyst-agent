@@ -5,13 +5,13 @@ structured analysis using the LLM.
 """
 
 import asyncio
-import json
 import logging
 from typing import AsyncIterator, Optional
 from dataclasses import dataclass, field
 
 from analysis.financial_data import FinancialDataClient, FinancialStatement
 from analysis.ratios import FinancialRatioCalculator, RatioResult
+from analysis.verification import verify_figures
 from analysis.trends import compute_trends, format_trends_for_prompt
 from rag.retriever import FinancialRAGRetriever
 from core.llm_provider import LLMClient
@@ -54,6 +54,7 @@ class AnalysisResult:
     sources: list[dict]
     raw_data: dict = field(default_factory=dict)
     trends: dict = field(default_factory=dict)
+    verification: dict = field(default_factory=dict)
 
 
 class FinancialAnalyzer:
@@ -132,6 +133,9 @@ class FinancialAnalyzer:
             sources=rag_result.sources,
             raw_data={"financials_available": list(k for k, v in financials.items() if v is not None)},
             trends=compute_trends(financials),
+            verification=verify_figures(
+                analysis_text, financials, ratios, compute_trends(financials), rag_result.context_text
+            ),
         )
 
     async def earnings_analysis(self, ticker: str) -> AnalysisResult:
@@ -165,6 +169,9 @@ class FinancialAnalyzer:
             catalysts=self._extract_section(analysis_text, "catalyst"),
             sources=rag_result.sources,
             trends=compute_trends(financials),
+            verification=verify_figures(
+                analysis_text, financials, ratios, compute_trends(financials), rag_result.context_text
+            ),
         )
 
     async def risk_analysis(self, ticker: str) -> AnalysisResult:
@@ -211,6 +218,7 @@ Important disclaimer: This risk analysis is for informational purposes only."""
             risks=self._extract_section(analysis_text, "risk"),
             catalysts=[],
             sources=rag_result.sources,
+            verification=verify_figures(analysis_text, {}, [], {}, rag_result.context_text),
         )
 
     async def valuation_analysis(self, ticker: str) -> AnalysisResult:
@@ -270,6 +278,9 @@ and should not be used as investment advice. Consult a financial professional.""
             catalysts=[],
             sources=rag_result.sources,
             trends=compute_trends(financials),
+            verification=verify_figures(
+                analysis_text, financials, ratios, compute_trends(financials), rag_result.context_text
+            ),
         )
 
     async def _prepare_question(self, question: str, ticker: Optional[str]):
@@ -306,23 +317,6 @@ Instructions:
 
 Important: This response is for informational purposes only and does not constitute financial advice."""
         return prompt, rag_result
-
-    async def answer_question(self, question: str, ticker: Optional[str] = None) -> dict:
-        """
-        Answer a free-form financial question using RAG + data APIs.
-        """
-        prompt, rag_result = await self._prepare_question(question, ticker)
-        answer = await self.llm.generate(
-            prompt=prompt,
-            system_prompt=FINANCIAL_ANALYST_SYSTEM_PROMPT,
-            temperature=0.2,
-        )
-        return {
-            "question": question,
-            "answer": answer,
-            "sources": rag_result.sources,
-            "collections_searched": rag_result.collection_stats,
-        }
 
     async def stream_answer(
         self, question: str, ticker: Optional[str] = None

@@ -1,7 +1,5 @@
 """SEC section extraction should skip table-of-contents entries."""
 
-import sys
-import types
 
 import pytest
 

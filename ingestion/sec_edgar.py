@@ -9,7 +9,7 @@ import json
 import logging
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass, field
@@ -22,10 +22,7 @@ from config.settings import settings
 logger = logging.getLogger(__name__)
 
 # SEC EDGAR API endpoints
-EDGAR_COMPANY_SEARCH = "https://efts.sec.gov/LATEST/search-index?q={query}&dateRange=custom&startdt={start}&enddt={end}&forms={form_type}"
 EDGAR_SUBMISSIONS = "https://data.sec.gov/submissions/CIK{cik}.json"
-EDGAR_FILING_URL = "https://www.sec.gov/Archives/edgar/data/{cik}/{accession}/{filename}"
-EDGAR_FULL_TEXT_SEARCH = "https://efts.sec.gov/LATEST/search-index?q={query}&forms={forms}&dateRange=custom&startdt={start}&enddt={end}"
 
 
 EDGAR_COMPANY_FACTS = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
@@ -57,7 +54,6 @@ class SECEdgarClient:
     Downloads and parses SEC filings for RAG ingestion.
     """
 
-    SUPPORTED_FORMS = {"10-K", "10-Q", "8-K", "DEF 14A", "10-K/A", "10-Q/A"}
     RATE_LIMIT_DELAY = 0.12  # ~8 requests/sec to stay under SEC's 10/sec limit
 
     def __init__(self):
@@ -331,42 +327,9 @@ class SECEdgarClient:
             "url": filing.url,
             "sections": {k: v[:5000] for k, v in filing.sections.items()},  # truncate for storage
             "raw_text_length": len(filing.raw_text),
-            "downloaded_at": datetime.utcnow().isoformat(),
+            "downloaded_at": datetime.now(timezone.utc).isoformat(),
         }
 
         filepath.write_text(json.dumps(data, indent=2))
         logger.info(f"Saved filing: {filepath}")
         return filepath
-
-    async def search_filings(
-        self,
-        query: str,
-        form_types: list[str] = None,
-        start_date: str = "2020-01-01",
-        end_date: Optional[str] = None,
-    ) -> list[dict]:
-        """Full-text search across SEC EDGAR filings."""
-        if not end_date:
-            end_date = datetime.now().strftime("%Y-%m-%d")
-
-        forms = ",".join(form_types or ["10-K", "10-Q"])
-        url = (
-            f"https://efts.sec.gov/LATEST/search-index?"
-            f"q=%22{query}%22&forms={forms}"
-            f"&dateRange=custom&startdt={start_date}&enddt={end_date}"
-        )
-
-        async with httpx.AsyncClient() as client:
-            resp = await self._rate_limited_get(url, client)
-            results = resp.json()
-
-        hits = results.get("hits", {}).get("hits", [])
-        return [
-            {
-                "company": hit.get("_source", {}).get("display_names", ["Unknown"])[0],
-                "form_type": hit.get("_source", {}).get("form_type", ""),
-                "filing_date": hit.get("_source", {}).get("file_date", ""),
-                "url": f"https://www.sec.gov/Archives/edgar/data/{hit.get('_source', {}).get('file_num', '')}",
-            }
-            for hit in hits[:20]
-        ]

@@ -72,7 +72,8 @@ def test_orchestrator_returns_text_only_when_no_tool_calls():
 
     orch = FinancialAgentOrchestrator.__new__(FinancialAgentOrchestrator)
     orch.llm = FakeLLM()
-    orch.conversation_history = []
+    from collections import OrderedDict
+    orch.conversations = OrderedDict()
 
     async def fake_exec(name, args, ticker=None, state=None):
         return {"ok": True, "sources": []}
@@ -98,8 +99,9 @@ def client(monkeypatch):
         analyzer = FakeAnalyzer()
         seen = {}
 
-        async def process_query(self, query, ticker=None):
+        async def process_query(self, query, ticker=None, session_id="default"):
             FakeOrch.seen["ticker"] = ticker
+            FakeOrch.seen["session"] = session_id
             from agent.orchestrator import AgentResponse
             return AgentResponse(answer="ok", tools_used=[], sources=[])
 
@@ -110,6 +112,10 @@ def client(monkeypatch):
     monkeypatch.setattr(server, "orchestrator", FakeOrch())
     monkeypatch.setattr(server, "ingestion_pipeline", FakePipeline())
     server.jobs.clear()
+    from api.security import reset_rate_limits
+    reset_rate_limits()
+    monkeypatch.setattr(server.settings, "api_key", None)
+    monkeypatch.setattr(server.settings, "rate_limit_per_minute", 60)
     # skip lifespan (it builds real clients)
     return TestClient(server.app), FakeOrch
 
@@ -141,7 +147,8 @@ def test_ingest_runs_in_background_and_job_is_pollable(client):
     # TestClient runs background tasks before returning
     assert job["status"] == "completed"
     assert job["result"]["news_days_back"] == 0
-    assert c.get("/api/v1/jobs/nope").status_code == 404
+    assert c.get("/api/v1/jobs/" + "0" * 32).status_code == 404
+    assert c.get("/api/v1/jobs/nope").status_code == 422
 
 
 def test_ingest_can_wait_for_result(client):

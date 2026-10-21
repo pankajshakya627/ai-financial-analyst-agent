@@ -7,7 +7,7 @@ prepared remarks, Q&A sessions, and speaker-attributed dialogue.
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass, field
@@ -120,7 +120,7 @@ class EarningsCallProcessor:
                 "qa_count": len(qa_turns),
                 "word_count": len(text.split()),
                 "financial_mentions": self._extract_financial_mentions(text),
-                "parsed_at": datetime.utcnow().isoformat(),
+                "parsed_at": datetime.now(timezone.utc).isoformat(),
             },
         )
 
@@ -179,7 +179,7 @@ class EarningsCallProcessor:
             raw_text=raw_text,
             metadata={
                 "source": data.get("source", "api"),
-                "parsed_at": datetime.utcnow().isoformat(),
+                "parsed_at": datetime.now(timezone.utc).isoformat(),
                 "financial_mentions": self._extract_financial_mentions(raw_text),
             },
         )
@@ -313,28 +313,3 @@ class EarningsCallProcessor:
         filepath.write_text(json.dumps(data, indent=2))
         logger.info(f"Saved transcript: {filepath}")
         return filepath
-
-    def get_transcript_summary(self, transcript: EarningsCallTranscript) -> str:
-        """Generate a concise summary prompt-ready string from a transcript."""
-        parts = [
-            f"# {transcript.company} ({transcript.ticker}) - {transcript.quarter} Earnings Call",
-            f"Date: {transcript.call_date}",
-            f"Participants: {len(transcript.participants)} speakers",
-            "",
-            "## Key Highlights (Prepared Remarks)",
-        ]
-
-        # Include first 3 executive turns from prepared remarks
-        exec_turns = [
-            t for t in transcript.prepared_remarks if t.role in ("CEO", "CFO", "President")
-        ]
-        for turn in exec_turns[:3]:
-            parts.append(f"\n**{turn.speaker} ({turn.role}):** {turn.text[:500]}...")
-
-        if transcript.metadata.get("financial_mentions"):
-            parts.append("\n## Financial Metrics Mentioned")
-            for metric, values in transcript.metadata["financial_mentions"].items():
-                val_str = ", ".join(v["value"] for v in values[:3])
-                parts.append(f"- {metric}: {val_str}")
-
-        return "\n".join(parts)

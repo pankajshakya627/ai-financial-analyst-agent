@@ -6,7 +6,7 @@ parsing, chunking, and vector store insertion.
 import hashlib
 import logging
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from config.settings import settings
 from core.text_processing import FinancialTextSplitter, clean_financial_text
@@ -289,7 +289,7 @@ class IngestionPipeline:
             "ticker": ticker,
             "sec_filings": {},
             "news": {},
-            "started_at": datetime.utcnow().isoformat(),
+            "started_at": datetime.now(timezone.utc).isoformat(),
         }
 
         # Ingest SEC filings
@@ -307,6 +307,6 @@ class IngestionPipeline:
         else:
             results["news"] = {"skipped": True, "articles_fetched": 0, "chunks_created": 0}
 
-        results["completed_at"] = datetime.utcnow().isoformat()
+        results["completed_at"] = datetime.now(timezone.utc).isoformat()
         logger.info(f"Full ingestion complete for {ticker}: {results}")
         return results

@@ -7,6 +7,8 @@ and synthesizes results into coherent responses.
 import asyncio
 import json
 import logging
+import re
+from collections import OrderedDict
 from typing import Optional
 from dataclasses import dataclass, field
 
@@ -16,7 +18,6 @@ from core.vector_store import VectorStoreManager
 from rag.retriever import FinancialRAGRetriever
 from analysis.financial_data import FinancialDataClient
 from analysis.financial_analyzer import FinancialAnalyzer
-from analysis.ratios import FinancialRatioCalculator
 from ingestion.pipeline import IngestionPipeline
 from agent.tools import AGENT_TOOLS
 
@@ -82,6 +83,9 @@ class FinancialAgentOrchestrator:
     """
 
     MAX_TOOL_ITERATIONS = 5  # prevent infinite tool loops
+    TICKER_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9.\-]{0,9}$")
+    ALLOWED_FORMS = {"10-K", "10-Q", "8-K", "10-K/A", "10-Q/A"}
+    MAX_FILING_COUNT = 10
 
     def __init__(
         self,
@@ -94,11 +98,25 @@ class FinancialAgentOrchestrator:
         self.data_client = FinancialDataClient()
         self.analyzer = FinancialAnalyzer(self.llm, self.data_client, self.rag)
         self.ingestion = IngestionPipeline(self.vector_store)
-        self.ratio_calc = FinancialRatioCalculator()
-        self.conversation_history: list[ConversationMessage] = []
+        # Conversation history per session so users never see each other's context
+        self.conversations: "OrderedDict[str, list[ConversationMessage]]" = OrderedDict()
+
+    def _history(self, session_id: str) -> list[ConversationMessage]:
+        """Get (or create) a session's history, evicting the least recently used."""
+        history = self.conversations.get(session_id)
+        if history is None:
+            history = self.conversations[session_id] = []
+            while len(self.conversations) > settings.max_sessions:
+                self.conversations.popitem(last=False)
+        else:
+            self.conversations.move_to_end(session_id)
+        return history
 
     async def process_query(
-        self, user_query: str, ticker: Optional[str] = None
+        self,
+        user_query: str,
+        ticker: Optional[str] = None,
+        session_id: str = "default",
     ) -> AgentResponse:
         """
         Process a user query end-to-end:
@@ -107,9 +125,8 @@ class FinancialAgentOrchestrator:
         3. Execute tools
         4. Synthesize final response
         """
-        self.conversation_history.append(
-            ConversationMessage(role="user", content=user_query)
-        )
+        history = self._history(session_id)
+        history.append(ConversationMessage(role="user", content=user_query))
 
         tools_used = []
         all_sources = []
@@ -120,7 +137,7 @@ class FinancialAgentOrchestrator:
         # Iterative tool calling loop
         for iteration in range(self.MAX_TOOL_ITERATIONS):
             # Build the conversation context
-            context = self._build_context(tool_results)
+            context = self._build_context(tool_results, history)
 
             # Call LLM with tool definitions
             llm_response = await self.llm.generate_with_tools(
@@ -164,7 +181,7 @@ class FinancialAgentOrchestrator:
             final_answer = await self._synthesize_response(user_query, tool_results)
 
         # Add to conversation history
-        self.conversation_history.append(
+        history.append(
             ConversationMessage(
                 role="assistant",
                 content=final_answer,
@@ -205,6 +222,27 @@ class FinancialAgentOrchestrator:
             "context": result.context_text[:context_limit],
         }
 
+    def _validate_args(self, tool_name: str, args: dict) -> dict:
+        """Reject malformed or abusive tool arguments chosen by the model."""
+        if not isinstance(args, dict):
+            raise ValueError(f"Arguments for {tool_name} must be an object")
+        ticker = args.get("ticker")
+        if ticker is not None and not (
+            isinstance(ticker, str) and self.TICKER_PATTERN.match(ticker)
+        ):
+            raise ValueError(f"Invalid ticker: {ticker!r}")
+        args = dict(args)
+        if tool_name == "ingest_company_data":
+            forms = args.get("form_types") or ["10-K", "10-Q"]
+            bad = [f for f in forms if f not in self.ALLOWED_FORMS]
+            if bad:
+                raise ValueError(f"Unsupported form types: {bad}")
+            args["form_types"] = forms
+            args["filing_count"] = max(1, min(int(args.get("filing_count", 3)), self.MAX_FILING_COUNT))
+        if "limit" in args:
+            args["limit"] = max(1, min(int(args["limit"]), 20))
+        return args
+
     async def _execute_tool(
         self,
         tool_name: str,
@@ -214,6 +252,7 @@ class FinancialAgentOrchestrator:
     ) -> dict:
         """Execute a tool by name and return structured results."""
         run_state = run_state if run_state is not None else {"next_source_id": 1}
+        args = self._validate_args(tool_name, args)
         if "ticker" in args and isinstance(args["ticker"], str):
             args = {**args, "ticker": args["ticker"].upper()}
         elif default_ticker and tool_name not in ("search_sec_filings", "search_earnings_calls", "search_financial_news"):
@@ -380,12 +419,14 @@ class FinancialAgentOrchestrator:
         else:
             raise ValueError(f"Unknown tool: {tool_name}")
 
-    def _build_context(self, tool_results: dict) -> str:
+    def _build_context(
+        self, tool_results: dict, history: Optional[list[ConversationMessage]] = None
+    ) -> str:
         """Build conversation context including previous tool results."""
         parts = []
 
         # Include recent conversation history
-        for msg in self.conversation_history[-6:]:  # last 3 turns
+        for msg in (history or [])[-6:]:  # last 3 turns
             parts.append(f"[{msg.role}]: {msg.content[:500]}")
 
         # Include tool results from this iteration
@@ -435,6 +476,6 @@ financial or investment advice."""
                 unique.append(source)
         return unique
 
-    def reset_conversation(self):
-        """Clear conversation history."""
-        self.conversation_history.clear()
+    def reset_conversation(self, session_id: str = "default") -> None:
+        """Clear one session's conversation history."""
+        self.conversations.pop(session_id, None)

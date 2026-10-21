@@ -5,7 +5,7 @@ Covers profitability, liquidity, leverage, efficiency, and valuation ratios.
 
 import logging
 from typing import Optional
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +140,7 @@ class FinancialRatioCalculator:
         current_liabilities = self._get_num(balance, "totalCurrentLiabilities")
         cash = self._get_num(balance, "cashAndCashEquivalents", "cashAndShortTermInvestments")
         inventory = self._get_num(balance, "inventory", "netInventory") or 0
-        receivables = self._get_num(balance, "netReceivables", "currentNetReceivables") or 0
+        self._get_num(balance, "netReceivables", "currentNetReceivables") or 0
 
         quick_assets = None
         if current_assets is not None and inventory is not None:

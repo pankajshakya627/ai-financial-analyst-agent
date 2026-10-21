@@ -280,10 +280,19 @@ python main.py serve
 | GET | `/api/v1/financials/{ticker}` | Get financial statements |
 | GET | `/api/v1/profile/{ticker}` | Get company profile |
 | GET | `/api/v1/ratios/{ticker}` | Calculate financial ratios |
-| GET | `/api/v1/trends/{ticker}` | Multi-year growth, CAGR and margin trends |
+| GET | `/api/v1/trends/{ticker}` | Multi-year growth, CAGR and margin trends (`include_ttm=true` adds trailing-twelve-month totals; needs a data API key) |
+| POST | `/api/v1/conversation/reset` | Clear one conversation (`session_id` query param) |
 | GET | `/api/v1/knowledge-base/stats` | Vector store statistics |
 | GET | `/api/v1/config` | Current configuration |
 | GET | `/health` | Health check |
+
+### Security
+
+- Set `API_KEY` in `.env` to require an `X-API-Key` header on every `/api/v1` endpoint (`/health` stays public). Without it the server logs a warning and is unauthenticated.
+- Requests are rate limited per client (`RATE_LIMIT_PER_MINUTE`, default 60) and return `429` with `Retry-After` when exceeded.
+- `/api/v1/query` keeps conversation history per `session_id` (returned in the response; send it back to continue). Sessions are namespaced per API key. Reset one with `POST /api/v1/conversation/reset?session_id=...`.
+- Tickers, form types, analysis types and sizes are validated; provider keys are redacted from logs and error messages.
+- Set `CORS_ORIGINS` to your real front-end origins in production.
 
 ### Example API Call
 
@@ -350,6 +359,7 @@ To add more companies, edit the `COMPANY_NAMES` dictionary in `ingestion/financi
 ## Analysis Capabilities
 
 - **Multi-period trends**: year-over-year growth, CAGR and margin changes (`analysis/trends.py`), included in every analysis prompt and in `/api/v1/trends/{ticker}`
+- **Figure checking**: numbers in the narrative are compared with the statements, ratios, trends and retrieved sources; unmatched figures are returned as `verification` and listed in the report under "Figures To Double-Check" (the text is never altered)
 - **Numbered citations**: retrieved passages are labelled `[S1]`, `[S2]`... and the response `sources` list uses the same ids, so claims can be traced
 - **No data-API key needed for core statements**: without FMP/Alpha Vantage keys the client falls back to SEC XBRL company facts (annual income statement, balance sheet and cash flow). Quarterly statements, prices and analyst estimates still need an API key
 

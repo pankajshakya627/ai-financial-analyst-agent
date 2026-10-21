@@ -9,24 +9,18 @@ services:
       - .env
     volumes:
       - ./data:/app/data
-    depends_on:
-      - ollama
     restart: unless-stopped
 
-  # Optional: Ollama for local LLM inference
+  # Optional local LLM: docker compose --profile ollama up
+  # (set OLLAMA_BASE_URL=http://ollama:11434 in .env). Works on CPU; for NVIDIA GPUs
+  # add a `deploy.resources.reservations.devices` entry with driver: nvidia.
   ollama:
     image: ollama/ollama:latest
+    profiles: ["ollama"]
     ports:
-      - "11434:11434"
+      - "127.0.0.1:11434:11434"
     volumes:
       - ollama_data:/root/.ollama
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
     restart: unless-stopped
 
 volumes:

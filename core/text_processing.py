@@ -40,16 +40,6 @@ class FinancialTextSplitter:
         r"(?i)CONTROLS\s+AND\s+PROCEDURES",
     ]
 
-    # Earnings call section patterns
-    EARNINGS_SECTION_PATTERNS = [
-        r"(?i)(operator|moderator)\s*:",
-        r"(?i)prepared\s+remarks",
-        r"(?i)question[s]?\s*(and|&)\s*answer[s]?",
-        r"(?i)Q&A\s+session",
-        r"(?i)opening\s+remarks",
-        r"(?i)closing\s+remarks",
-    ]
-
     def __init__(self, chunk_size: int = 1000, chunk_overlap: int = 200):
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
@@ -89,26 +79,24 @@ class FinancialTextSplitter:
         speaker_pattern = r"\n([A-Z][a-zA-Z\s\.]+)\s*(?:[-–—]|:)\s*"
         segments = re.split(speaker_pattern, text)
 
+        if len(segments) <= 1:
+            return self._recursive_split(text, 0)
+
+        # re.split with one capture group gives [preamble, speaker, dialogue, speaker, dialogue, ...]
+        turns = []
+        if segments[0].strip():
+            turns.append(("Introduction", segments[0]))
+        for i in range(1, len(segments) - 1, 2):
+            turns.append((segments[i].strip(), segments[i + 1]))
+
         chunks = []
-        current_pos = 0
-
-        if len(segments) > 1:
-            # Reassemble speaker + dialogue pairs
-            for i in range(0, len(segments) - 1, 2):
-                segment = segments[i]
-                if i + 1 < len(segments):
-                    speaker = segments[i + 1] if i > 0 else ""
-                    dialogue = segments[i] if i == 0 else segments[i + 1]
-
-                    combined = f"{speaker}: {dialogue}" if speaker else dialogue
-                    sub_chunks = self._recursive_split(combined.strip(), current_pos)
-                    for chunk in sub_chunks:
-                        chunk.section = speaker.strip() if speaker else "Introduction"
-                    chunks.extend(sub_chunks)
-                    current_pos += len(combined)
-        else:
-            chunks = self._recursive_split(text, 0)
-
+        position = 0
+        for speaker, dialogue in turns:
+            combined = f"{speaker}: {dialogue}" if speaker != "Introduction" else dialogue
+            for chunk in self._recursive_split(combined.strip(), position):
+                chunk.section = speaker
+                chunks.append(chunk)
+            position += len(combined)
         return chunks
 
     def _extract_sections(

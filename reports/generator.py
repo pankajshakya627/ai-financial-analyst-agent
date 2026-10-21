@@ -6,7 +6,7 @@ Produces structured financial analysis reports in multiple formats.
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -34,7 +34,6 @@ class ReportGenerator:
     def generate_markdown_report(
         self,
         analysis: AnalysisResult,
-        include_raw_data: bool = False,
     ) -> str:
         """Generate a full Markdown report from an analysis result."""
         sections = [
@@ -46,6 +45,7 @@ class ReportGenerator:
             self._risks_section(analysis),
             self._catalysts_section(analysis),
             self._sources_section(analysis),
+            self._verification_section(analysis),
             self._disclaimer(),
         ]
 
@@ -65,7 +65,7 @@ class ReportGenerator:
             "metadata": {
                 "ticker": analysis.ticker,
                 "analysis_type": analysis.analysis_type,
-                "generated_at": datetime.utcnow().isoformat(),
+                "generated_at": datetime.now(timezone.utc).isoformat(),
                 "disclaimer": "This report is for informational purposes only and does not constitute investment advice.",
             },
             "executive_summary": analysis.summary,
@@ -76,6 +76,7 @@ class ReportGenerator:
             "catalysts": analysis.catalysts,
             "sources": analysis.sources,
             "trends": analysis.trends,
+            "verification": analysis.verification,
         }
 
         filepath = self._report_path(analysis, "json")
@@ -183,6 +184,19 @@ class ReportGenerator:
                 lines.append(f"- [{source_type}: {detail} ({date})]({url})")
             else:
                 lines.append(f"- {source_type}: {detail} ({date})")
+        return "\n".join(lines)
+
+    def _verification_section(self, analysis: AnalysisResult) -> str:
+        v = analysis.verification or {}
+        unsupported = v.get("unsupported") or []
+        if not unsupported:
+            return ""
+        lines = [
+            "## Figures To Double-Check\n",
+            f"{v.get('unsupported_count', len(unsupported))} of {v.get('checked', 0)} figures "
+            "in the narrative could not be matched to the supplied data or sources:\n",
+        ]
+        lines += [f"- `{u['figure']}` in \"…{u['context']}…\"" for u in unsupported]
         return "\n".join(lines)
 
     def _disclaimer(self) -> str:

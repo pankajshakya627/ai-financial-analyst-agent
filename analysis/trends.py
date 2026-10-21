@@ -133,3 +133,48 @@ def format_trends_for_prompt(trends: dict) -> str:
         change = "" if m["change_bps"] is None else f" ({m['change_bps']:+.0f} bps overall)"
         lines.append(f"- {name.replace('_', ' ').title()}: {path}{change}")
     return "\n".join(lines) or "No multi-period trend data available."
+
+
+FLOW_METRICS = (
+    "revenue", "gross_profit", "operating_income", "net_income", "eps",
+    "operating_cash_flow", "free_cash_flow",
+)
+
+
+def compute_ttm(quarterly_financials: dict) -> dict:
+    """Trailing-twelve-month totals from quarterly statements.
+
+    Needs four consecutive quarters per metric; also returns the prior-year TTM
+    and growth when eight quarters are available.
+    """
+    series = build_series(quarterly_financials)
+    result = {}
+    for name in FLOW_METRICS:
+        points = series.get(name, [])
+        if len(points) < 4:
+            continue
+        last4 = points[-4:]
+        if not _consecutive_quarters(last4):
+            continue
+        ttm = sum(v for _, v in last4)
+        prior = None
+        if len(points) >= 8 and _consecutive_quarters(points[-8:-4]):
+            prior = sum(v for _, v in points[-8:-4])
+        result[name] = {
+            "ttm": ttm,
+            "periods": [d for d, _ in last4],
+            "prior_ttm": prior,
+            "growth": (ttm - prior) / prior if prior and prior > 0 else None,
+        }
+    return result
+
+
+def _consecutive_quarters(points: list[tuple[str, float]]) -> bool:
+    """True when four period-end dates span roughly three quarters (240-300 days)."""
+    from datetime import date
+
+    try:
+        first, last = date.fromisoformat(points[0][0][:10]), date.fromisoformat(points[-1][0][:10])
+    except ValueError:
+        return False
+    return len(points) == 4 and 240 <= (last - first).days <= 300

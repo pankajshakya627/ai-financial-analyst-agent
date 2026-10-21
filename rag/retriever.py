@@ -297,7 +297,3 @@ class FinancialRAGRetriever:
                 }
             )
         return sources, index
-
-    def _extract_sources(self, docs: list[RetrievedDocument]) -> list[dict]:
-        """Extract unique, numbered source citations from retrieved documents."""
-        return self._build_sources(docs)[0]

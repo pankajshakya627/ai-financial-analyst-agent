@@ -65,7 +65,6 @@ class Settings(BaseSettings):
         default="all-MiniLM-L6-v2",
         description="Embedding model name (sentence-transformers or OpenAI)",
     )
-    embedding_dimension: int = Field(default=384, description="Embedding vector dimension")
 
     # --- ChromaDB Configuration ---
     chroma_persist_dir: str = Field(default="./data/vector_store", description="ChromaDB persistence directory")
@@ -96,6 +95,15 @@ class Settings(BaseSettings):
     port: int = Field(default=8000, description="Server port")
     debug: bool = Field(default=False, description="Debug mode")
     cors_origins: list[str] = Field(default=["*"], description="Allowed CORS origins")
+    api_key: Optional[str] = Field(
+        default=None,
+        description="If set, API requests must send it in the X-API-Key header",
+    )
+    rate_limit_per_minute: int = Field(
+        default=60, description="Max API requests per client per minute (0 disables)"
+    )
+    max_sessions: int = Field(default=200, description="Max conversation sessions kept in memory")
+    max_ingest_jobs: int = Field(default=2, description="Max concurrent background ingestion jobs")
 
     # --- Data Paths ---
     data_dir: str = Field(default="./data", description="Root data directory")
