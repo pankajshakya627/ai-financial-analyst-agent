@@ -359,18 +359,22 @@ class FinancialAgentOrchestrator:
         elif tool_name == "run_comprehensive_analysis":
             ticker = args["ticker"]
             analysis_type = args.get("analysis_type", "comprehensive")
+            # Share the answer's citation counter so analysis sources don't
+            # reuse [S#] labels already assigned by search tools
+            source_id_start = run_state["next_source_id"]
 
             if analysis_type == "comprehensive":
-                result = await self.analyzer.comprehensive_analysis(ticker)
+                result = await self.analyzer.comprehensive_analysis(ticker, source_id_start)
             elif analysis_type == "earnings":
-                result = await self.analyzer.earnings_analysis(ticker)
+                result = await self.analyzer.earnings_analysis(ticker, source_id_start)
             elif analysis_type == "risk":
-                result = await self.analyzer.risk_analysis(ticker)
+                result = await self.analyzer.risk_analysis(ticker, source_id_start)
             elif analysis_type == "valuation":
-                result = await self.analyzer.valuation_analysis(ticker)
+                result = await self.analyzer.valuation_analysis(ticker, source_id_start)
             else:
-                result = await self.analyzer.comprehensive_analysis(ticker)
+                result = await self.analyzer.comprehensive_analysis(ticker, source_id_start)
 
+            run_state["next_source_id"] += len(result.sources)
             return {
                 "analysis": result.detailed_analysis,
                 "summary": result.summary,

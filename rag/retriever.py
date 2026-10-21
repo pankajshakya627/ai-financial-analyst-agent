@@ -160,10 +160,17 @@ class FinancialRAGRetriever:
         self,
         ticker: str,
         analysis_type: str = "comprehensive",
+        source_id_start: int = 1,
     ) -> RetrievalResult:
         """
         Targeted retrieval for specific analysis types.
         Fetches the most relevant context for financial analysis.
+
+        Args:
+            ticker: Company ticker to filter results
+            analysis_type: Which query template to use
+            source_id_start: First citation number ([S<n>]) to assign; lets callers
+                keep numbers unique across several retrievals in one answer
         """
         query_templates = {
             "comprehensive": (
@@ -189,7 +196,9 @@ class FinancialRAGRetriever:
         }
 
         query = query_templates.get(analysis_type, query_templates["comprehensive"])
-        return self.retrieve(query=query, ticker=ticker, top_k=15)
+        return self.retrieve(
+            query=query, ticker=ticker, top_k=15, source_id_start=source_id_start
+        )
 
     def _assemble_context(
         self,

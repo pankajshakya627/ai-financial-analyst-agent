@@ -76,7 +76,7 @@ class FinancialAnalyzer:
         self.rag = rag_retriever or FinancialRAGRetriever()
         self.ratio_calculator = FinancialRatioCalculator()
 
-    async def comprehensive_analysis(self, ticker: str) -> AnalysisResult:
+    async def comprehensive_analysis(self, ticker: str, source_id_start: int = 1) -> AnalysisResult:
         """
         Full company analysis combining structured data + RAG + LLM.
         Produces an investment-research-grade report.
@@ -90,7 +90,7 @@ class FinancialAnalyzer:
         ratios = self._compute_ratios(financials)
 
         # 3. Retrieve RAG context
-        rag_result = await asyncio.to_thread(self.rag.retrieve_for_analysis, ticker, "comprehensive")
+        rag_result = await asyncio.to_thread(self.rag.retrieve_for_analysis, ticker, "comprehensive", source_id_start)
 
         # 4. Build the analysis prompt
         prompt = self._build_analysis_prompt(
@@ -138,10 +138,10 @@ class FinancialAnalyzer:
             ),
         )
 
-    async def earnings_analysis(self, ticker: str) -> AnalysisResult:
+    async def earnings_analysis(self, ticker: str, source_id_start: int = 1) -> AnalysisResult:
         """Analyze recent earnings performance and guidance."""
         financials = await self.data_client.get_full_financials(ticker)
-        rag_result = await asyncio.to_thread(self.rag.retrieve_for_analysis, ticker, "earnings")
+        rag_result = await asyncio.to_thread(self.rag.retrieve_for_analysis, ticker, "earnings", source_id_start)
         ratios = self._compute_ratios(financials)
 
         prompt = self._build_analysis_prompt(
@@ -174,9 +174,9 @@ class FinancialAnalyzer:
             ),
         )
 
-    async def risk_analysis(self, ticker: str) -> AnalysisResult:
+    async def risk_analysis(self, ticker: str, source_id_start: int = 1) -> AnalysisResult:
         """Deep dive into company risk factors."""
-        rag_result = await asyncio.to_thread(self.rag.retrieve_for_analysis, ticker, "risk")
+        rag_result = await asyncio.to_thread(self.rag.retrieve_for_analysis, ticker, "risk", source_id_start)
 
         prompt = f"""Perform a comprehensive risk analysis for {ticker} based on the following
 SEC filing context and earnings call commentary.
@@ -221,10 +221,10 @@ Important disclaimer: This risk analysis is for informational purposes only."""
             verification=verify_figures(analysis_text, {}, [], {}, rag_result.context_text),
         )
 
-    async def valuation_analysis(self, ticker: str) -> AnalysisResult:
+    async def valuation_analysis(self, ticker: str, source_id_start: int = 1) -> AnalysisResult:
         """DCF-oriented valuation analysis."""
         financials = await self.data_client.get_full_financials(ticker)
-        rag_result = await asyncio.to_thread(self.rag.retrieve_for_analysis, ticker, "valuation")
+        rag_result = await asyncio.to_thread(self.rag.retrieve_for_analysis, ticker, "valuation", source_id_start)
         ratios = self._compute_ratios(financials)
 
         # Extract valuation-specific ratios

@@ -55,6 +55,49 @@ def test_orchestrator_keeps_citation_numbers_unique_and_uses_ticker():
     assert state["next_source_id"] == 3
 
 
+def test_analysis_tool_shares_citation_counter():
+    from agent.orchestrator import FinancialAgentOrchestrator
+    from analysis.financial_analyzer import AnalysisResult
+
+    starts = []
+
+    class FakeAnalyzer:
+        async def comprehensive_analysis(self, ticker, source_id_start=1):
+            starts.append(source_id_start)
+            sources, _ = _retriever()._build_sources(
+                [_doc("sec_edgar", f"2024-0{source_id_start}-0{n}") for n in (1, 2)],
+                id_start=source_id_start,
+            )
+            return AnalysisResult(
+                ticker=ticker, analysis_type="comprehensive", summary="", detailed_analysis="",
+                key_metrics={}, ratios=[], risks=[], catalysts=[], sources=sources,
+            )
+
+    class FakeRag:
+        def retrieve(self, query, ticker, collections, source_id_start):
+            sources, _ = _retriever()._build_sources(
+                [_doc("sec_edgar", "2023-01-01")], id_start=source_id_start)
+            from rag.retriever import RetrievalResult
+            return RetrievalResult(query, [], "ctx", sources)
+
+    orch = FinancialAgentOrchestrator.__new__(FinancialAgentOrchestrator)
+    orch.analyzer = FakeAnalyzer()
+    orch.rag = FakeRag()
+    state = {"next_source_id": 1}
+
+    async def run():
+        search = await orch._execute_tool("search_sec_filings", {"query": "risk"}, "AAPL", state)
+        analysis = await orch._execute_tool(
+            "run_comprehensive_analysis", {"ticker": "AAPL"}, "AAPL", state)
+        return search, analysis
+
+    search, analysis = asyncio.run(run())
+    assert starts == [2]  # analysis picks up where the search left off
+    assert [s["id"] for s in search["sources"]] == [1]
+    assert [s["id"] for s in analysis["sources"]] == [2, 3]
+    assert state["next_source_id"] == 4
+
+
 def test_orchestrator_returns_text_only_when_no_tool_calls():
     from agent.orchestrator import FinancialAgentOrchestrator
 
