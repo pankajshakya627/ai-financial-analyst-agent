@@ -334,7 +334,8 @@ Important: This response is for informational purposes only and does not constit
             yield {"type": "done"}
         except Exception as e:
             logger.error(f"Streaming answer failed: {e}", exc_info=True)
-            yield {"type": "error", "message": str(e)}
+            from core.security import redact_secrets
+            yield {"type": "error", "message": redact_secrets(e)}
 
     def _compute_ratios(self, financials: dict) -> list[RatioResult]:
         """Compute ratios from the fetched financial data."""
