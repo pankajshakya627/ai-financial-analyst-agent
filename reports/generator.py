@@ -5,6 +5,7 @@ Produces structured financial analysis reports in multiple formats.
 
 import json
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -21,6 +22,14 @@ class ReportGenerator:
     def __init__(self):
         self.reports_dir = Path(settings.reports_dir)
         self.reports_dir.mkdir(parents=True, exist_ok=True)
+        self.last_markdown_path: Optional[Path] = None
+        self.last_json_path: Optional[Path] = None
+
+    def _report_path(self, analysis: AnalysisResult, extension: str) -> Path:
+        """Build a report path whose name cannot escape the reports directory."""
+        safe = lambda v: re.sub(r"[^A-Za-z0-9_-]", "_", str(v))[:40]
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return self.reports_dir / f"{safe(analysis.ticker)}_{safe(analysis.analysis_type)}_{stamp}.{extension}"
 
     def generate_markdown_report(
         self,
@@ -43,9 +52,9 @@ class ReportGenerator:
         report = "\n\n".join(s for s in sections if s)
 
         # Save to disk
-        filename = f"{analysis.ticker}_{analysis.analysis_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
-        filepath = self.reports_dir / filename
+        filepath = self._report_path(analysis, "md")
         filepath.write_text(report)
+        self.last_markdown_path = filepath
         logger.info(f"Report saved: {filepath}")
 
         return report
@@ -66,11 +75,12 @@ class ReportGenerator:
             "risks": analysis.risks,
             "catalysts": analysis.catalysts,
             "sources": analysis.sources,
+            "trends": analysis.trends,
         }
 
-        filename = f"{analysis.ticker}_{analysis.analysis_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        filepath = self.reports_dir / filename
+        filepath = self._report_path(analysis, "json")
         filepath.write_text(json.dumps(report, indent=2, default=str))
+        self.last_json_path = filepath
         logger.info(f"JSON report saved: {filepath}")
 
         return report

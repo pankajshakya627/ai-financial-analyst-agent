@@ -4,13 +4,15 @@ Combines financial data, ratios, and RAG context to produce
 structured analysis using the LLM.
 """
 
+import asyncio
 import json
 import logging
-from typing import Optional
+from typing import AsyncIterator, Optional
 from dataclasses import dataclass, field
 
 from analysis.financial_data import FinancialDataClient, FinancialStatement
 from analysis.ratios import FinancialRatioCalculator, RatioResult
+from analysis.trends import compute_trends, format_trends_for_prompt
 from rag.retriever import FinancialRAGRetriever
 from core.llm_provider import LLMClient
 
@@ -29,7 +31,9 @@ When analyzing financial data, always:
 2. Compare to industry benchmarks when available
 3. Identify risks and catalysts
 4. Provide forward-looking commentary based on available guidance
-5. Cite specific data points from SEC filings and earnings calls
+5. Cite specific data points from SEC filings and earnings calls, using the [S#] labels
+   shown in the retrieved context (e.g. "revenue grew 8% [S2]"); never invent a label
+6. Note which fiscal period each number refers to
 
 Important: This is financial analysis for informational purposes only, not investment advice.
 Always disclaim that professional financial advice should be sought for investment decisions."""
@@ -49,6 +53,7 @@ class AnalysisResult:
     catalysts: list[str]
     sources: list[dict]
     raw_data: dict = field(default_factory=dict)
+    trends: dict = field(default_factory=dict)
 
 
 class FinancialAnalyzer:
@@ -84,7 +89,7 @@ class FinancialAnalyzer:
         ratios = self._compute_ratios(financials)
 
         # 3. Retrieve RAG context
-        rag_result = self.rag.retrieve_for_analysis(ticker, "comprehensive")
+        rag_result = await asyncio.to_thread(self.rag.retrieve_for_analysis, ticker, "comprehensive")
 
         # 4. Build the analysis prompt
         prompt = self._build_analysis_prompt(
@@ -126,12 +131,13 @@ class FinancialAnalyzer:
             catalysts=self._extract_section(analysis_text, "catalyst"),
             sources=rag_result.sources,
             raw_data={"financials_available": list(k for k, v in financials.items() if v is not None)},
+            trends=compute_trends(financials),
         )
 
     async def earnings_analysis(self, ticker: str) -> AnalysisResult:
         """Analyze recent earnings performance and guidance."""
         financials = await self.data_client.get_full_financials(ticker)
-        rag_result = self.rag.retrieve_for_analysis(ticker, "earnings")
+        rag_result = await asyncio.to_thread(self.rag.retrieve_for_analysis, ticker, "earnings")
         ratios = self._compute_ratios(financials)
 
         prompt = self._build_analysis_prompt(
@@ -158,11 +164,12 @@ class FinancialAnalyzer:
             risks=self._extract_section(analysis_text, "risk"),
             catalysts=self._extract_section(analysis_text, "catalyst"),
             sources=rag_result.sources,
+            trends=compute_trends(financials),
         )
 
     async def risk_analysis(self, ticker: str) -> AnalysisResult:
         """Deep dive into company risk factors."""
-        rag_result = self.rag.retrieve_for_analysis(ticker, "risk")
+        rag_result = await asyncio.to_thread(self.rag.retrieve_for_analysis, ticker, "risk")
 
         prompt = f"""Perform a comprehensive risk analysis for {ticker} based on the following
 SEC filing context and earnings call commentary.
@@ -209,7 +216,7 @@ Important disclaimer: This risk analysis is for informational purposes only."""
     async def valuation_analysis(self, ticker: str) -> AnalysisResult:
         """DCF-oriented valuation analysis."""
         financials = await self.data_client.get_full_financials(ticker)
-        rag_result = self.rag.retrieve_for_analysis(ticker, "valuation")
+        rag_result = await asyncio.to_thread(self.rag.retrieve_for_analysis, ticker, "valuation")
         ratios = self._compute_ratios(financials)
 
         # Extract valuation-specific ratios
@@ -222,6 +229,9 @@ Important disclaimer: This risk analysis is for informational purposes only."""
 
 ## Calculated Valuation Ratios
 {self._format_ratios_for_prompt(val_ratios)}
+
+## Multi-Period Trends
+{format_trends_for_prompt(compute_trends(financials))}
 
 ## SEC Filing & Earnings Context
 {rag_result.context_text}
@@ -259,16 +269,13 @@ and should not be used as investment advice. Consult a financial professional.""
             risks=[],
             catalysts=[],
             sources=rag_result.sources,
+            trends=compute_trends(financials),
         )
 
-    async def answer_question(self, question: str, ticker: Optional[str] = None) -> dict:
-        """
-        Answer a free-form financial question using RAG + data APIs.
-        """
-        # Retrieve relevant context
-        rag_result = self.rag.retrieve(query=question, ticker=ticker)
+    async def _prepare_question(self, question: str, ticker: Optional[str]):
+        """Retrieve context and build the prompt for a free-form question."""
+        rag_result = await asyncio.to_thread(self.rag.retrieve, query=question, ticker=ticker)
 
-        # Optionally fetch real-time data if a ticker is specified
         financial_context = ""
         if ticker:
             try:
@@ -292,25 +299,48 @@ and should not be used as investment advice. Consult a financial professional.""
 {rag_result.context_text}
 
 Instructions:
-- Be specific and cite data points when available
+- Be specific and cite data points inline using the [S#] labels from the context
 - If the context doesn't contain enough information, say so clearly
 - Distinguish between facts (from filings) and interpretations
 - Include relevant caveats about data recency
 
 Important: This response is for informational purposes only and does not constitute financial advice."""
+        return prompt, rag_result
 
+    async def answer_question(self, question: str, ticker: Optional[str] = None) -> dict:
+        """
+        Answer a free-form financial question using RAG + data APIs.
+        """
+        prompt, rag_result = await self._prepare_question(question, ticker)
         answer = await self.llm.generate(
             prompt=prompt,
             system_prompt=FINANCIAL_ANALYST_SYSTEM_PROMPT,
             temperature=0.2,
         )
-
         return {
             "question": question,
             "answer": answer,
             "sources": rag_result.sources,
             "collections_searched": rag_result.collection_stats,
         }
+
+    async def stream_answer(
+        self, question: str, ticker: Optional[str] = None
+    ) -> AsyncIterator[dict]:
+        """Stream an answer as events: sources first, then tokens, then done."""
+        try:
+            prompt, rag_result = await self._prepare_question(question, ticker)
+            yield {"type": "sources", "sources": rag_result.sources}
+            async for token in self.llm.generate_stream(
+                prompt=prompt,
+                system_prompt=FINANCIAL_ANALYST_SYSTEM_PROMPT,
+                temperature=0.2,
+            ):
+                yield {"type": "token", "text": token}
+            yield {"type": "done"}
+        except Exception as e:
+            logger.error(f"Streaming answer failed: {e}", exc_info=True)
+            yield {"type": "error", "message": str(e)}
 
     def _compute_ratios(self, financials: dict) -> list[RatioResult]:
         """Compute ratios from the fetched financial data."""
@@ -391,6 +421,9 @@ Important: This response is for informational purposes only and does not constit
 ## Calculated Financial Ratios
 {formatted_ratios}
 
+## Multi-Period Trends
+{format_trends_for_prompt(compute_trends(financials))}
+
 ## SEC Filings & Earnings Call Context (from RAG)
 {rag_context}
 
@@ -410,17 +443,19 @@ and does not constitute investment advice."""
                 parts.append(f"Company: {p.name} | Sector: {p.sector} | Market Cap: ${p.market_cap:,.0f}")
 
         if financials.get("income_statement"):
-            parts.append("\n### Income Statement (Most Recent)")
             stmt = financials["income_statement"][0]
             data = stmt.data if isinstance(stmt, FinancialStatement) else stmt
+            period_end = getattr(stmt, "date", "") or data.get("date", "")
+            parts.append(f"\n### Income Statement (Most Recent, period ending {period_end or 'unknown'})")
             for key in ["revenue", "totalRevenue", "grossProfit", "operatingIncome", "netIncome", "ebitda", "eps"]:
                 if key in data and data[key]:
                     parts.append(f"  {key}: {data[key]}")
 
         if financials.get("balance_sheet"):
-            parts.append("\n### Balance Sheet (Most Recent)")
             stmt = financials["balance_sheet"][0]
             data = stmt.data if isinstance(stmt, FinancialStatement) else stmt
+            period_end = getattr(stmt, "date", "") or data.get("date", "")
+            parts.append(f"\n### Balance Sheet (Most Recent, period ending {period_end or 'unknown'})")
             for key in ["totalAssets", "totalCurrentAssets", "cashAndCashEquivalents",
                         "totalLiabilities", "totalCurrentLiabilities", "totalDebt",
                         "totalStockholdersEquity"]:
@@ -428,9 +463,10 @@ and does not constitute investment advice."""
                     parts.append(f"  {key}: {data[key]}")
 
         if financials.get("cash_flow"):
-            parts.append("\n### Cash Flow (Most Recent)")
             stmt = financials["cash_flow"][0]
             data = stmt.data if isinstance(stmt, FinancialStatement) else stmt
+            period_end = getattr(stmt, "date", "") or data.get("date", "")
+            parts.append(f"\n### Cash Flow (Most Recent, period ending {period_end or 'unknown'})")
             for key in ["operatingCashFlow", "capitalExpenditure", "freeCashFlow",
                         "dividendsPaid", "commonStockRepurchased"]:
                 if key in data and data[key]:

@@ -195,16 +195,7 @@ def cmd_config(args):
 
 def _get_model_name() -> str:
     """Get the active model name based on provider."""
-    provider = settings.llm_provider.value
-    if provider == "anthropic":
-        return settings.anthropic_model
-    elif provider == "openai":
-        return settings.openai_model
-    elif provider == "ollama":
-        return settings.ollama_model
-    elif provider == "llamacpp":
-        return settings.llamacpp_model_path or f"server@{settings.llamacpp_base_url}"
-    return "unknown"
+    return settings.active_llm_model
 
 
 def main():

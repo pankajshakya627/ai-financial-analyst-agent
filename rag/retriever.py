@@ -98,6 +98,7 @@ class FinancialRAGRetriever:
         ticker: Optional[str] = None,
         top_k: Optional[int] = None,
         collections: Optional[list[str]] = None,
+        source_id_start: int = 1,
     ) -> RetrievalResult:
         """
         Retrieve relevant documents for a query.
@@ -107,6 +108,8 @@ class FinancialRAGRetriever:
             ticker: Optional ticker to filter results
             top_k: Number of results to return
             collections: Override automatic collection routing
+            source_id_start: First citation number ([S<n>]) to assign; lets callers
+                keep numbers unique across several retrievals in one answer
         """
         top_k = top_k or settings.top_k_results
         target_collections = collections or self.route_query(query)
@@ -135,10 +138,9 @@ class FinancialRAGRetriever:
         top_docs = all_docs[:top_k]
 
         # Assemble context text
-        context_text = self._assemble_context(top_docs)
-
-        # Extract source citations
-        sources = self._extract_sources(top_docs)
+        # Extract numbered source citations, then label context with the same numbers
+        sources, source_index = self._build_sources(top_docs, id_start=source_id_start)
+        context_text = self._assemble_context(top_docs, source_index)
 
         result = RetrievalResult(
             query=query,
@@ -189,7 +191,11 @@ class FinancialRAGRetriever:
         query = query_templates.get(analysis_type, query_templates["comprehensive"])
         return self.retrieve(query=query, ticker=ticker, top_k=15)
 
-    def _assemble_context(self, docs: list[RetrievedDocument]) -> str:
+    def _assemble_context(
+        self,
+        docs: list[RetrievedDocument],
+        source_index: Optional[dict[str, int]] = None,
+    ) -> str:
         """
         Assemble retrieved documents into a structured context string
         for the LLM prompt.
@@ -197,7 +203,15 @@ class FinancialRAGRetriever:
         if not docs:
             return "No relevant documents found in the knowledge base."
 
-        parts = ["## Retrieved Financial Context\n"]
+        source_index = source_index or {}
+        parts = [
+            "## Retrieved Financial Context\n",
+            "Cite supporting passages inline using their [S#] labels.\n",
+        ]
+
+        def label(doc: RetrievedDocument) -> str:
+            n = source_index.get(self._source_key(doc))
+            return f"[S{n}] " if n is not None else ""
 
         # Group by source type
         sec_docs = [d for d in docs if d.metadata.get("source") == "sec_edgar"]
@@ -209,7 +223,7 @@ class FinancialRAGRetriever:
             for doc in sec_docs:
                 meta = doc.metadata
                 parts.append(
-                    f"\n**{meta.get('form_type', 'Filing')} - "
+                    f"\n**{label(doc)}{meta.get('form_type', 'Filing')} - "
                     f"{meta.get('company', '')} ({meta.get('filing_date', '')})**\n"
                     f"Section: {meta.get('section', 'N/A')} | "
                     f"Relevance: {doc.score:.2f}\n"
@@ -221,7 +235,7 @@ class FinancialRAGRetriever:
             for doc in earnings_docs:
                 meta = doc.metadata
                 parts.append(
-                    f"\n**{meta.get('company', '')} {meta.get('quarter', '')} "
+                    f"\n**{label(doc)}{meta.get('company', '')} {meta.get('quarter', '')} "
                     f"Earnings Call ({meta.get('call_date', '')})**\n"
                     f"Speaker: {meta.get('speaker', 'N/A')} "
                     f"({meta.get('speaker_role', '')}) | "
@@ -235,7 +249,7 @@ class FinancialRAGRetriever:
             for doc in news_docs:
                 meta = doc.metadata
                 parts.append(
-                    f"\n**{meta.get('title', 'News Article')}** "
+                    f"\n**{label(doc)}{meta.get('title', 'News Article')}** "
                     f"({meta.get('published_at', '')[:10]})\n"
                     f"Source: {meta.get('news_source', '')} | "
                     f"Sentiment: {meta.get('sentiment', 'N/A')} | "
@@ -245,31 +259,45 @@ class FinancialRAGRetriever:
 
         return "\n".join(parts)
 
-    def _extract_sources(self, docs: list[RetrievedDocument]) -> list[dict]:
-        """Extract unique source citations from retrieved documents."""
-        seen = set()
-        sources = []
-        for doc in docs:
-            meta = doc.metadata
-            source_key = f"{meta.get('source')}_{meta.get('ticker')}_{meta.get('filing_date', meta.get('call_date', meta.get('published_at', '')))}"
+    @staticmethod
+    def _source_key(doc: RetrievedDocument) -> str:
+        meta = doc.metadata
+        when = meta.get("filing_date", meta.get("call_date", meta.get("published_at", "")))
+        detail = meta.get("form_type", meta.get("quarter", meta.get("title", "")))
+        return f"{meta.get('source')}_{meta.get('ticker')}_{when}_{detail}"
 
-            if source_key not in seen:
-                seen.add(source_key)
-                sources.append(
-                    {
-                        "type": meta.get("source", "unknown"),
-                        "company": meta.get("company", ""),
-                        "ticker": meta.get("ticker", ""),
-                        "date": meta.get(
-                            "filing_date",
-                            meta.get("call_date", meta.get("published_at", "")),
-                        ),
-                        "detail": meta.get(
-                            "form_type",
-                            meta.get("quarter", meta.get("title", "")),
-                        ),
-                        "url": meta.get("url", ""),
-                        "relevance": doc.score,
-                    }
-                )
-        return sources
+    def _build_sources(
+        self, docs: list[RetrievedDocument], id_start: int = 1
+    ) -> tuple[list[dict], dict[str, int]]:
+        """Build numbered, de-duplicated source citations.
+
+        Returns the source list and a map from source key to its citation number.
+        """
+        index: dict[str, int] = {}
+        sources: list[dict] = []
+        for doc in docs:
+            key = self._source_key(doc)
+            if key in index:
+                continue
+            meta = doc.metadata
+            number = id_start + len(sources)
+            index[key] = number
+            sources.append(
+                {
+                    "id": number,
+                    "type": meta.get("source", "unknown"),
+                    "company": meta.get("company", ""),
+                    "ticker": meta.get("ticker", ""),
+                    "date": meta.get(
+                        "filing_date", meta.get("call_date", meta.get("published_at", ""))
+                    ),
+                    "detail": meta.get("form_type", meta.get("quarter", meta.get("title", ""))),
+                    "url": meta.get("url", ""),
+                    "relevance": doc.score,
+                }
+            )
+        return sources, index
+
+    def _extract_sources(self, docs: list[RetrievedDocument]) -> list[dict]:
+        """Extract unique, numbered source citations from retrieved documents."""
+        return self._build_sources(docs)[0]

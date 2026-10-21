@@ -110,6 +110,18 @@ class Settings(BaseSettings):
         description="Log format string",
     )
 
+    @property
+    def active_llm_model(self) -> str:
+        """Model name for the currently selected LLM provider."""
+        provider = self.llm_provider
+        if provider == LLMProvider.ANTHROPIC:
+            return self.anthropic_model
+        if provider == LLMProvider.OPENAI:
+            return self.openai_model
+        if provider == LLMProvider.OLLAMA:
+            return self.ollama_model
+        return self.llamacpp_model_path or f"server@{self.llamacpp_base_url}"
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "case_sensitive": False}
 
 

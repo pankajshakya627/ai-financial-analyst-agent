@@ -28,6 +28,13 @@ EDGAR_FILING_URL = "https://www.sec.gov/Archives/edgar/data/{cik}/{accession}/{f
 EDGAR_FULL_TEXT_SEARCH = "https://efts.sec.gov/LATEST/search-index?q={query}&forms={forms}&dateRange=custom&startdt={start}&enddt={end}"
 
 
+EDGAR_COMPANY_FACTS = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
+TICKER_MAP_TTL_SECONDS = 24 * 3600
+
+# Process-wide cache so the ~1 MB ticker file is not downloaded on every lookup
+_ticker_map_cache: dict = {"fetched_at": 0.0, "map": {}}
+
+
 @dataclass
 class SECFiling:
     """Represents a parsed SEC filing."""
@@ -75,27 +82,38 @@ class SECEdgarClient:
         return response
 
     async def get_company_cik(self, ticker: str) -> Optional[str]:
-        """Look up a company's CIK number from its ticker symbol."""
-        url = f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company={ticker}&type=&dateb=&owner=include&count=10&search_text=&action=getcompany&output=atom"
+        """Look up a company's CIK number from its ticker symbol (cached)."""
+        try:
+            cache = _ticker_map_cache
+            if not cache["map"] or time.time() - cache["fetched_at"] > TICKER_MAP_TTL_SECONDS:
+                async with httpx.AsyncClient() as client:
+                    resp = await self._rate_limited_get(
+                        "https://www.sec.gov/files/company_tickers.json", client
+                    )
+                cache["map"] = {
+                    entry["ticker"].upper(): str(entry["cik_str"]).zfill(10)
+                    for entry in resp.json().values()
+                }
+                cache["fetched_at"] = time.time()
 
-        async with httpx.AsyncClient() as client:
-            try:
-                # Use the company tickers JSON endpoint
-                tickers_url = "https://www.sec.gov/files/company_tickers.json"
-                resp = await self._rate_limited_get(tickers_url, client)
-                tickers_data = resp.json()
-
-                for entry in tickers_data.values():
-                    if entry.get("ticker", "").upper() == ticker.upper():
-                        cik = str(entry["cik_str"]).zfill(10)
-                        logger.info(f"Found CIK {cik} for ticker {ticker}")
-                        return cik
-
+            cik = cache["map"].get(ticker.upper())
+            if cik:
+                logger.info(f"Found CIK {cik} for ticker {ticker}")
+            else:
                 logger.warning(f"CIK not found for ticker: {ticker}")
-                return None
-            except Exception as e:
-                logger.error(f"Error looking up CIK for {ticker}: {e}")
-                return None
+            return cik
+        except Exception as e:
+            logger.error(f"Error looking up CIK for {ticker}: {e}")
+            return None
+
+    async def get_company_facts(self, ticker: str) -> dict:
+        """Fetch SEC XBRL company facts (structured financial data) for a ticker."""
+        cik = await self.get_company_cik(ticker)
+        if not cik:
+            raise ValueError(f"Could not find CIK for ticker: {ticker}")
+        async with httpx.AsyncClient() as client:
+            resp = await self._rate_limited_get(EDGAR_COMPANY_FACTS.format(cik=cik), client)
+        return resp.json()
 
     async def get_company_filings(
         self,

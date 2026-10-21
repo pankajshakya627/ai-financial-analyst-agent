@@ -3,11 +3,17 @@ FastAPI server for the AI Financial Analyst Agent.
 Provides REST API endpoints for all agent capabilities.
 """
 
+import asyncio
+import json
 import logging
+import uuid
+from collections import OrderedDict
+from datetime import datetime
 from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -16,6 +22,7 @@ from core.llm_provider import get_llm_client
 from core.vector_store import VectorStoreManager
 from agent.orchestrator import FinancialAgentOrchestrator
 from analysis.financial_data import FinancialDataClient
+from analysis.trends import compute_trends
 from analysis.financial_analyzer import FinancialAnalyzer
 from rag.retriever import FinancialRAGRetriever
 from ingestion.pipeline import IngestionPipeline
@@ -27,6 +34,10 @@ logger = logging.getLogger(__name__)
 orchestrator: Optional[FinancialAgentOrchestrator] = None
 ingestion_pipeline: Optional[IngestionPipeline] = None
 report_generator: Optional[ReportGenerator] = None
+
+# In-memory record of background ingestion jobs (most recent 100)
+MAX_JOBS = 100
+jobs: "OrderedDict[str, dict]" = OrderedDict()
 
 
 @asynccontextmanager
@@ -75,7 +86,7 @@ class QueryRequest(BaseModel):
     """User query request."""
 
     query: str = Field(..., description="Natural language financial question")
-    ticker: Optional[str] = Field(None, description="Stock ticker to focus on")
+    ticker: Optional[str] = Field(None, pattern=r"^[A-Za-z][A-Za-z0-9.\-]{0,9}$", description="Stock ticker to focus on")
 
 
 class QueryResponse(BaseModel):
@@ -89,17 +100,21 @@ class QueryResponse(BaseModel):
 class IngestRequest(BaseModel):
     """Data ingestion request."""
 
-    ticker: str = Field(..., description="Stock ticker symbol")
+    ticker: str = Field(..., pattern=r"^[A-Za-z][A-Za-z0-9.\-]{0,9}$", description="Stock ticker symbol")
     form_types: list[str] = Field(default=["10-K", "10-Q"], description="SEC form types")
     filing_count: int = Field(default=3, description="Number of filings per type")
     include_news: bool = Field(default=True, description="Also ingest financial news")
-    news_days_back: int = Field(default=30, description="Days of news to fetch")
+    news_days_back: int = Field(default=30, ge=0, le=365, description="Days of news to fetch")
+    run_in_background: bool = Field(
+        default=True,
+        description="Return a job id immediately and poll /api/v1/jobs/{id}; false waits for completion",
+    )
 
 
 class AnalysisRequest(BaseModel):
     """Analysis request."""
 
-    ticker: str = Field(..., description="Stock ticker symbol")
+    ticker: str = Field(..., pattern=r"^[A-Za-z][A-Za-z0-9.\-]{0,9}$", description="Stock ticker symbol")
     analysis_type: str = Field(
         default="comprehensive",
         description="Type: comprehensive, earnings, risk, valuation",
@@ -112,7 +127,7 @@ class EarningsCallRequest(BaseModel):
 
     raw_text: str = Field(..., description="Raw earnings call transcript text")
     company: str = Field(..., description="Company name")
-    ticker: str = Field(..., description="Stock ticker")
+    ticker: str = Field(..., pattern=r"^[A-Za-z][A-Za-z0-9.\-]{0,9}$", description="Stock ticker")
     quarter: str = Field(..., description="Quarter (e.g., Q4 2024)")
     call_date: str = Field(..., description="Call date (YYYY-MM-DD)")
 
@@ -139,7 +154,7 @@ async def process_query(request: QueryRequest):
     if not orchestrator:
         raise HTTPException(status_code=503, detail="Agent not initialized")
 
-    response = await orchestrator.process_query(request.query)
+    response = await orchestrator.process_query(request.query, ticker=request.ticker)
     return QueryResponse(
         answer=response.answer,
         tools_used=response.tools_used,
@@ -147,24 +162,95 @@ async def process_query(request: QueryRequest):
     )
 
 
-@app.post("/api/v1/ingest")
-async def ingest_company(request: IngestRequest, background_tasks: BackgroundTasks):
+@app.post("/api/v1/query/stream")
+async def stream_query(request: QueryRequest):
     """
-    Ingest SEC filings and news for a company into the knowledge base.
-    Runs in the background for large ingestions.
+    Stream an answer as server-sent events. Events are JSON objects:
+    {"type": "sources"|"token"|"done"|"error", ...}. Sources arrive first so
+    clients can resolve the [S#] citations as text streams in.
     """
-    if not ingestion_pipeline:
-        raise HTTPException(status_code=503, detail="Ingestion pipeline not initialized")
+    if not orchestrator:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
 
-    # Run ingestion (could be backgrounded for large jobs)
-    result = await ingestion_pipeline.ingest_full_company(
-        ticker=request.ticker,
+    async def event_stream():
+        async for event in orchestrator.analyzer.stream_answer(request.query, request.ticker):
+            yield f"data: {json.dumps(event, default=str)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+def _new_job(kind: str, ticker: str) -> str:
+    job_id = uuid.uuid4().hex
+    jobs[job_id] = {
+        "job_id": job_id,
+        "kind": kind,
+        "ticker": ticker,
+        "status": "queued",
+        "created_at": datetime.utcnow().isoformat(),
+        "result": None,
+        "error": None,
+    }
+    while len(jobs) > MAX_JOBS:
+        jobs.popitem(last=False)
+    return job_id
+
+
+async def _run_ingest(request: IngestRequest) -> dict:
+    return await ingestion_pipeline.ingest_full_company(
+        ticker=request.ticker.upper(),
         sec_form_types=request.form_types,
         sec_count=request.filing_count,
         news_days_back=request.news_days_back if request.include_news else 0,
     )
 
-    return {"status": "completed", "ticker": request.ticker, "results": result}
+
+async def _ingest_job(job_id: str, request: IngestRequest) -> None:
+    job = jobs.get(job_id)
+    if job is None:
+        return
+    job["status"] = "running"
+    try:
+        job["result"] = await _run_ingest(request)
+        job["status"] = "completed"
+    except Exception as e:
+        logger.error(f"Ingest job {job_id} failed: {e}", exc_info=True)
+        job["error"] = str(e)
+        job["status"] = "failed"
+
+
+@app.post("/api/v1/ingest")
+async def ingest_company(request: IngestRequest, background_tasks: BackgroundTasks):
+    """
+    Ingest SEC filings and news for a company into the knowledge base.
+    By default runs in the background and returns a job id (HTTP 202);
+    poll GET /api/v1/jobs/{job_id}. Set run_in_background=false to wait.
+    """
+    if not ingestion_pipeline:
+        raise HTTPException(status_code=503, detail="Ingestion pipeline not initialized")
+
+    if not request.run_in_background:
+        result = await _run_ingest(request)
+        return {"status": "completed", "ticker": request.ticker, "results": result}
+
+    job_id = _new_job("ingest", request.ticker.upper())
+    background_tasks.add_task(_ingest_job, job_id, request)
+    return JSONResponse(
+        status_code=202,
+        content={
+            "status": "accepted",
+            "job_id": job_id,
+            "status_url": f"/api/v1/jobs/{job_id}",
+        },
+    )
+
+
+@app.get("/api/v1/jobs/{job_id}")
+async def get_job(job_id: str):
+    """Get the status and result of a background job."""
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
 
 
 @app.post("/api/v1/ingest/earnings-call")
@@ -216,12 +302,17 @@ async def run_analysis(request: AnalysisRequest):
         "risks": analysis.risks,
         "catalysts": analysis.catalysts,
         "sources": analysis.sources,
+        "trends": analysis.trends,
     }
 
     if request.generate_report and report_generator:
-        report_md = report_generator.generate_markdown_report(analysis)
-        report_json = report_generator.generate_json_report(analysis)
+        report_generator.generate_markdown_report(analysis)
+        report_generator.generate_json_report(analysis)
         response["report_generated"] = True
+        response["report_files"] = {
+            "markdown": str(report_generator.last_markdown_path),
+            "json": str(report_generator.last_json_path),
+        }
 
     return response
 
@@ -303,6 +394,24 @@ async def get_ratios(ticker: str):
     }
 
 
+@app.get("/api/v1/trends/{ticker}")
+async def get_trends(ticker: str, years: int = 5):
+    """Multi-year growth, CAGR and margin trends from annual statements."""
+    data_client = FinancialDataClient()
+    try:
+        income, balance, cash_flow = await asyncio.gather(
+            data_client.get_income_statement(ticker, "annual", years),
+            data_client.get_balance_sheet(ticker, "annual", years),
+            data_client.get_cash_flow(ticker, "annual", years),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch financials: {e}")
+    trends = compute_trends(
+        {"income_statement": income, "balance_sheet": balance, "cash_flow": cash_flow}
+    )
+    return {"ticker": ticker.upper(), "trends": trends}
+
+
 @app.get("/api/v1/knowledge-base/stats")
 async def knowledge_base_stats():
     """Get statistics about the vector store collections."""
@@ -332,11 +441,7 @@ async def get_config():
     """Get current (non-sensitive) configuration."""
     return {
         "llm_provider": settings.llm_provider.value,
-        "llm_model": (
-            settings.anthropic_model
-            if settings.llm_provider.value == "anthropic"
-            else settings.openai_model
-        ),
+        "llm_model": settings.active_llm_model,
         "embedding_provider": settings.embedding_provider.value,
         "embedding_model": settings.embedding_model,
         "chunk_size": settings.chunk_size,

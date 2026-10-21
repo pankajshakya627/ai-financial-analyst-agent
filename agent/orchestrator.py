@@ -4,6 +4,7 @@ Routes user queries to the appropriate tools, executes them,
 and synthesizes results into coherent responses.
 """
 
+import asyncio
 import json
 import logging
 from typing import Optional
@@ -33,7 +34,8 @@ ORCHESTRATOR_SYSTEM_PROMPT = """You are an AI Financial Analyst Agent with acces
 Your job is to answer financial questions accurately by using the appropriate tools.
 
 IMPORTANT GUIDELINES:
-- Always cite your sources (SEC filing date, earnings call quarter, news source)
+- Always cite your sources inline using the [S#] labels from search results
+  (they are unique across all searches in one answer); never invent a label
 - Distinguish facts (from filings) from analysis (your interpretation)
 - If data is not available in the knowledge base, say so and suggest ingesting it
 - Use specific numbers and percentages, not vague language
@@ -95,7 +97,9 @@ class FinancialAgentOrchestrator:
         self.ratio_calc = FinancialRatioCalculator()
         self.conversation_history: list[ConversationMessage] = []
 
-    async def process_query(self, user_query: str) -> AgentResponse:
+    async def process_query(
+        self, user_query: str, ticker: Optional[str] = None
+    ) -> AgentResponse:
         """
         Process a user query end-to-end:
         1. Add to conversation history
@@ -110,6 +114,8 @@ class FinancialAgentOrchestrator:
         tools_used = []
         all_sources = []
         tool_results = {}
+        run_state = {"next_source_id": 1}  # keeps [S#] citation numbers unique per answer
+        ticker = ticker.upper() if ticker else None
 
         # Iterative tool calling loop
         for iteration in range(self.MAX_TOOL_ITERATIONS):
@@ -118,7 +124,10 @@ class FinancialAgentOrchestrator:
 
             # Call LLM with tool definitions
             llm_response = await self.llm.generate_with_tools(
-                prompt=f"{context}\n\nUser Question: {user_query}",
+                prompt=(
+                    f"{context}\n\nUser Question: {user_query}"
+                    + (f"\nFocus ticker: {ticker}" if ticker else "")
+                ),
                 tools=AGENT_TOOLS,
                 system_prompt=ORCHESTRATOR_SYSTEM_PROMPT,
             )
@@ -139,7 +148,7 @@ class FinancialAgentOrchestrator:
                 logger.info(f"Executing tool: {tool_name} with args: {tool_args}")
 
                 try:
-                    result = await self._execute_tool(tool_name, tool_args)
+                    result = await self._execute_tool(tool_name, tool_args, ticker, run_state)
                     tool_results[f"{tool_name}_{iteration}_{call_idx}"] = result
 
                     # Collect sources
@@ -170,53 +179,60 @@ class FinancialAgentOrchestrator:
             raw_tool_results=tool_results,
         )
 
-    async def _execute_tool(self, tool_name: str, args: dict) -> dict:
+    async def _search_collection(
+        self,
+        collection: str,
+        args: dict,
+        default_ticker: Optional[str],
+        run_state: dict,
+        context_limit: int,
+    ) -> dict:
+        """Run a vector search off the event loop and return a tool result."""
+        result = await asyncio.to_thread(
+            self.rag.retrieve,
+            query=args["query"],
+            ticker=args.get("ticker") or default_ticker,
+            collections=[collection],
+            source_id_start=run_state["next_source_id"],
+        )
+        run_state["next_source_id"] += len(result.sources)
+        return {
+            "documents": [
+                {"content": d.content[:500], "metadata": d.metadata, "score": d.score}
+                for d in result.documents
+            ],
+            "sources": result.sources,
+            "context": result.context_text[:context_limit],
+        }
+
+    async def _execute_tool(
+        self,
+        tool_name: str,
+        args: dict,
+        default_ticker: Optional[str] = None,
+        run_state: Optional[dict] = None,
+    ) -> dict:
         """Execute a tool by name and return structured results."""
+        run_state = run_state if run_state is not None else {"next_source_id": 1}
+        if "ticker" in args and isinstance(args["ticker"], str):
+            args = {**args, "ticker": args["ticker"].upper()}
+        elif default_ticker and tool_name not in ("search_sec_filings", "search_earnings_calls", "search_financial_news"):
+            args = {**args, "ticker": default_ticker}
 
         if tool_name == "search_sec_filings":
-            result = self.rag.retrieve(
-                query=args["query"],
-                ticker=args.get("ticker"),
-                collections=[settings.chroma_collection_sec],
+            return await self._search_collection(
+                settings.chroma_collection_sec, args, default_ticker, run_state, 3000
             )
-            return {
-                "documents": [
-                    {"content": d.content[:500], "metadata": d.metadata, "score": d.score}
-                    for d in result.documents
-                ],
-                "sources": result.sources,
-                "context": result.context_text[:3000],
-            }
 
         elif tool_name == "search_earnings_calls":
-            result = self.rag.retrieve(
-                query=args["query"],
-                ticker=args.get("ticker"),
-                collections=[settings.chroma_collection_earnings],
+            return await self._search_collection(
+                settings.chroma_collection_earnings, args, default_ticker, run_state, 3000
             )
-            return {
-                "documents": [
-                    {"content": d.content[:500], "metadata": d.metadata, "score": d.score}
-                    for d in result.documents
-                ],
-                "sources": result.sources,
-                "context": result.context_text[:3000],
-            }
 
         elif tool_name == "search_financial_news":
-            result = self.rag.retrieve(
-                query=args["query"],
-                ticker=args.get("ticker"),
-                collections=[settings.chroma_collection_news],
+            return await self._search_collection(
+                settings.chroma_collection_news, args, default_ticker, run_state, 2000
             )
-            return {
-                "documents": [
-                    {"content": d.content[:500], "metadata": d.metadata, "score": d.score}
-                    for d in result.documents
-                ],
-                "sources": result.sources,
-                "context": result.context_text[:2000],
-            }
 
         elif tool_name == "get_financial_statements":
             ticker = args["ticker"]
@@ -413,7 +429,7 @@ financial or investment advice."""
         seen = set()
         unique = []
         for source in sources:
-            key = f"{source.get('type')}_{source.get('ticker')}_{source.get('date')}"
+            key = f"{source.get('id')}_{source.get('type')}_{source.get('ticker')}_{source.get('date')}"
             if key not in seen:
                 seen.add(key)
                 unique.append(source)

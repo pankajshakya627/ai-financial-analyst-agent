@@ -300,9 +300,12 @@ class IngestionPipeline:
             results["sec_filings"][form_type] = sec_stats
 
         # Ingest news
-        results["news"] = await self.ingest_news(
-            ticker=ticker, days_back=news_days_back
-        )
+        if news_days_back > 0:
+            results["news"] = await self.ingest_news(
+                ticker=ticker, days_back=news_days_back
+            )
+        else:
+            results["news"] = {"skipped": True, "articles_fetched": 0, "chunks_created": 0}
 
         results["completed_at"] = datetime.utcnow().isoformat()
         logger.info(f"Full ingestion complete for {ticker}: {results}")

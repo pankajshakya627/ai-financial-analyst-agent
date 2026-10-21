@@ -21,6 +21,8 @@ from datetime import datetime
 import httpx
 
 from config.settings import settings
+from ingestion.sec_edgar import SECEdgarClient
+from ingestion.sec_xbrl import facts_to_statements
 
 logger = logging.getLogger(__name__)
 
@@ -100,8 +102,41 @@ class FinancialDataClient:
         elif self.polygon_key:
             self.primary = "polygon"
         else:
-            self.primary = None
-            logger.warning("No financial data API keys configured")
+            self.primary = "sec_xbrl"
+            logger.info("No financial data API keys configured; using SEC XBRL filings data")
+        self._sec_client: Optional[SECEdgarClient] = None
+        self._facts_cache: dict[str, tuple[float, dict]] = {}
+
+    async def _sec_facts(self, ticker: str) -> dict:
+        """SEC company facts, cached for an hour per ticker."""
+        import time
+
+        key = ticker.upper()
+        cached = self._facts_cache.get(key)
+        if cached and time.time() - cached[0] < 3600:
+            return cached[1]
+        self._sec_client = self._sec_client or SECEdgarClient()
+        facts = await self._sec_client.get_company_facts(ticker)
+        self._facts_cache[key] = (time.time(), facts)
+        return facts
+
+    async def _sec_statements(
+        self, ticker: str, statement_type: str, period: str, limit: int
+    ) -> list[FinancialStatement]:
+        if period != "annual":
+            raise ValueError("SEC fallback supports annual statements only; set a data API key for quarterly")
+        facts = await self._sec_facts(ticker)
+        rows = facts_to_statements(facts, limit=limit)[statement_type]
+        return [
+            FinancialStatement(
+                ticker=ticker,
+                period=period,
+                date=r["date"],
+                data=r["data"],
+                statement_type=statement_type,
+            )
+            for r in rows
+        ]
 
     async def get_income_statement(
         self,
@@ -114,7 +149,7 @@ class FinancialDataClient:
             return await self._fmp_income_statement(ticker, period, limit)
         elif self.alpha_vantage_key:
             return await self._av_income_statement(ticker, period)
-        raise ValueError("No financial data API key configured")
+        return await self._sec_statements(ticker, "income_statement", period, limit)
 
     async def get_balance_sheet(
         self,
@@ -127,7 +162,7 @@ class FinancialDataClient:
             return await self._fmp_balance_sheet(ticker, period, limit)
         elif self.alpha_vantage_key:
             return await self._av_balance_sheet(ticker, period)
-        raise ValueError("No financial data API key configured")
+        return await self._sec_statements(ticker, "balance_sheet", period, limit)
 
     async def get_cash_flow(
         self,
@@ -140,7 +175,7 @@ class FinancialDataClient:
             return await self._fmp_cash_flow(ticker, period, limit)
         elif self.alpha_vantage_key:
             return await self._av_cash_flow(ticker, period)
-        raise ValueError("No financial data API key configured")
+        return await self._sec_statements(ticker, "cash_flow", period, limit)
 
     async def get_stock_price(
         self,
@@ -162,7 +197,16 @@ class FinancialDataClient:
             return await self._fmp_profile(ticker)
         elif self.alpha_vantage_key:
             return await self._av_profile(ticker)
-        raise ValueError("No financial data API key configured")
+        facts = await self._sec_facts(ticker)
+        return CompanyProfile(
+            ticker=ticker,
+            name=facts.get("entityName", ticker),
+            sector="",
+            industry="",
+            market_cap=0,
+            description="",
+            exchange="",
+        )
 
     async def get_key_metrics(self, ticker: str, limit: int = 5) -> list[dict]:
         """Fetch key financial metrics (PE, EV/EBITDA, ROE, etc.)."""
