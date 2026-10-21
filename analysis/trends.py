@@ -166,7 +166,9 @@ def compute_ttm(quarterly_financials: dict) -> dict:
             continue
         ttm = sum(v for _, v in last4)
         prior = None
-        if len(points) >= 8 and _consecutive_quarters(points[-8:-4]):
+        if len(points) >= 8 and all(
+            _consecutive_quarters(points[-8:][i:i + 4]) for i in range(5)
+        ):
             prior = sum(v for _, v in points[-8:-4])
         result[name] = {
             "ttm": ttm,
