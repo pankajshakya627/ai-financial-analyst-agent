@@ -208,6 +208,9 @@ async def stream_query(request: QueryRequest):
     Stream an answer as server-sent events. Events are JSON objects:
     {"type": "sources"|"token"|"done"|"error", ...}. Sources arrive first so
     clients can resolve the [S#] citations as text streams in.
+
+    Stateless: unlike POST /api/v1/query, this endpoint bypasses the tool loop
+    and conversation history; session_id is ignored.
     """
     if not orchestrator:
         raise HTTPException(status_code=503, detail="Agent not initialized")

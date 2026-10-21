@@ -63,6 +63,28 @@ def test_ttm_requires_consecutive_quarters():
     assert compute_ttm({"income_statement": gappy}) == {}
 
 
+def test_ttm_prior_block_must_be_continuous_with_current():
+    # Four quarters from 2024 after four from 2022: the 2022 block is not the
+    # prior year, so no prior TTM or growth is reported.
+    gappy = [_q(d, 1) for d in [
+        "2024-12-31", "2024-09-30", "2024-06-30", "2024-03-31",
+        "2022-12-31", "2022-09-30", "2022-06-30", "2022-03-31",
+    ]]
+    ttm = compute_ttm({"income_statement": gappy})["revenue"]
+    assert ttm["ttm"] == 4
+    assert ttm["prior_ttm"] is None and ttm["growth"] is None
+
+
+def test_figures_preserve_signs():
+    fin = {"income_statement": [{"date": "2024-12-31", "data": {"netIncome": -10_000_000}}]}
+    # A positive claim is not validated by a negative reference (or vice versa)
+    assert verify_figures("Net income was $10.0 million.", fin, [], {})["unsupported_count"] == 1
+    assert verify_figures("Net income was -$10.0 million.", fin, [], {})["unsupported_count"] == 0
+    assert verify_figures("Revenue grew 10%.", {}, [], {"metrics": {"revenue": {
+        "series": [], "yoy_growth": [{"date": "2024", "growth": -0.10}], "cagr": None}}},
+    )["unsupported_count"] == 1
+
+
 def test_alpha_vantage_normalization():
     balance = FinancialDataClient._normalize_av(
         {"fiscalDateEnding": "2024-12-31", "totalShareholderEquity": "90", "longTermDebt": "50",

@@ -166,9 +166,7 @@ def compute_ttm(quarterly_financials: dict) -> dict:
             continue
         ttm = sum(v for _, v in last4)
         prior = None
-        if len(points) >= 8 and all(
-            _consecutive_quarters(points[-8:][i:i + 4]) for i in range(5)
-        ):
+        if len(points) >= 8 and _consecutive_quarters(points[-8:]):
             prior = sum(v for _, v in points[-8:-4])
         result[name] = {
             "ttm": ttm,
@@ -180,11 +178,11 @@ def compute_ttm(quarterly_financials: dict) -> dict:
 
 
 def _consecutive_quarters(points: list[tuple[str, float]]) -> bool:
-    """True when four period-end dates span roughly three quarters (240-300 days)."""
+    """True when each period-end date follows the previous one by roughly a quarter."""
     from datetime import date
 
     try:
-        first, last = date.fromisoformat(points[0][0][:10]), date.fromisoformat(points[-1][0][:10])
+        dates = [date.fromisoformat(d[:10]) for d, _ in points]
     except ValueError:
         return False
-    return len(points) == 4 and 240 <= (last - first).days <= 300
+    return all(60 <= (b - a).days <= 120 for a, b in zip(dates, dates[1:]))

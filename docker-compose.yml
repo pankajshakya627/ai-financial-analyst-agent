@@ -8,7 +8,9 @@ services:
     env_file:
       - .env
     volumes:
-      - ./data:/app/data
+      # Named volume: Docker initializes it with the image's /app/data ownership
+      # (UID 1000), unlike a host bind-mount which can be root-owned
+      - app_data:/app/data
     restart: unless-stopped
 
   # Optional local LLM: docker compose --profile ollama up
@@ -24,4 +26,5 @@ services:
     restart: unless-stopped
 
 volumes:
+  app_data:
   ollama_data:

@@ -221,14 +221,16 @@ class FinancialTextSplitter:
 
 def clean_financial_text(text: str) -> str:
     """Clean and normalize financial document text."""
+    # Drop page numbers only where a page break makes them identifiable; a bare
+    # numeric line elsewhere may be a financial figure and must be preserved
+    text = re.sub(r"\f[ \t]*\d{1,3}[ \t]*(?=\n|$)", "\f", text)
+    text = re.sub(r"(?m)^ ?\d{1,3} ?\f", "\f", text)
     # Form feeds become line breaks first so page boundaries survive
     text = text.replace("\f", "\n").replace("\r\n", "\n").replace("\r", "\n")
     # Collapse runs of spaces/tabs but keep newlines (paragraph/section structure)
     text = re.sub(r"[^\S\n]+", " ", text)
     # Normalize dashes
     text = re.sub(r"[–—]", "-", text)
-    # Remove lines that are only a page number
-    text = re.sub(r"(?m)^ ?\d{1,3} ?$\n?", "", text)
     # Normalize currency symbols
     text = text.replace("US$", "$").replace("USD ", "$")
     # Trim line edges and collapse 3+ newlines to a paragraph break

@@ -26,6 +26,13 @@ def test_yoy_and_cagr():
     assert cagr(points) == pytest.approx(0.10)
 
 
+def test_missing_year_gives_no_yoy_and_date_based_cagr():
+    # 100 in 2022 then 121 in 2024: no prior-year comparison, 2-year CAGR of 10%
+    points = [("2022-12-31", 100.0), ("2024-12-31", 121.0)]
+    assert yoy_growth(points) == [("2024-12-31", None)]
+    assert cagr(points) == pytest.approx(0.10)
+
+
 def test_growth_undefined_for_non_positive_base():
     assert yoy_growth([("2022", -5.0), ("2023", 10.0)])[0][1] is None
     assert cagr([("2022", 0.0), ("2023", 10.0)]) is None

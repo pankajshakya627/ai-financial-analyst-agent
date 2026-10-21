@@ -69,8 +69,14 @@ class TestRegressions:
     def test_cleaning_keeps_paragraphs(self):
         cleaned = clean_financial_text("ITEM 1A. RISK FACTORS\n\nPara one.\n\n\n\nPara two.\n12\nmore")
         assert "\n\n" in cleaned
-        assert "\n12\n" not in cleaned
+        # Bare numeric lines are financial values, not page numbers: keep them
+        assert "\n12\n" in cleaned
         assert "Para one." in cleaned and "more" in cleaned
+
+    def test_cleaning_drops_page_numbers_at_page_breaks(self):
+        cleaned = clean_financial_text("Revenue\n100\n\f12\nNet income\n20\n3\f\nNext page")
+        assert "\n12\n" not in cleaned and "\n3\n" not in cleaned
+        assert "100" in cleaned and "20" in cleaned
 
     def test_sec_sections_split_after_cleaning(self):
         splitter = FinancialTextSplitter(chunk_size=200, chunk_overlap=20)

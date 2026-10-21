@@ -272,7 +272,7 @@ python main.py serve
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/api/v1/query` | Ask any financial question (optional `ticker` focuses it) |
-| POST | `/api/v1/query/stream` | Same, streamed as server-sent events (`sources`, `token`, `done`) |
+| POST | `/api/v1/query/stream` | Stream an answer as server-sent events (`sources`, `token`, `done`). Stateless: no tool loop or conversation history (`session_id` is ignored) |
 | POST | `/api/v1/ingest` | Ingest SEC filings + news. Runs in the background and returns a job id (HTTP 202); set `run_in_background=false` to wait |
 | GET | `/api/v1/jobs/{job_id}` | Status and result of a background ingestion job |
 | POST | `/api/v1/ingest/earnings-call` | Ingest earnings transcript |

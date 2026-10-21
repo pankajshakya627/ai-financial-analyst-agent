@@ -45,11 +45,21 @@ class RedactingFilter(logging.Filter):
         try:
             message = record.getMessage()
         except Exception:
-            return True
-        redacted = redact_secrets(message)
-        if redacted != message:
-            record.msg = redacted
-            record.args = ()
+            message = None
+        if message is not None:
+            redacted = redact_secrets(message)
+            if redacted != message:
+                record.msg = redacted
+                record.args = ()
+        # The formatter renders tracebacks separately from the message, so
+        # exc_info (and any cached exc_text) needs redacting too.
+        if record.exc_text:
+            record.exc_text = redact_secrets(record.exc_text)
+        if record.exc_info:
+            record.exc_text = redact_secrets(
+                logging.Formatter().formatException(record.exc_info)
+            )
+            record.exc_info = None
         return True
 
 
